@@ -2,15 +2,16 @@
 <html lang="zh-Hant">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23f59e0b'/%3E%3Ccircle cx='32' cy='32' r='16' fill='none' stroke='%23060b19' stroke-width='5'/%3E%3Cpath d='M16 32h32M32 16c6 4 9 10 9 16s-3 12-9 16c-6-4-9-10-9-16s3-12 9-16z' fill='none' stroke='%23060b19' stroke-width='3'/%3E%3C/svg%3E">
     <title>DSE 歷史科：國際協作外交逆轉航線</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Three.js & Tone.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
-    <!-- Google Fonts: Noto Sans TC & JetBrains Mono -->
-    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+    <!-- Self-hosted Noto Sans TC & JetBrains Mono -->
+    <link href="https://miaoda.feishu.cn/fonts/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
     
     <style>
         :root {
@@ -2352,6 +2353,20 @@
         let threeInitialized = false;
 
         /* ======================================================================
+         * COLLISION WORLD (v2)
+         *  - OBB boxes + circles + water zones registered while the city is built
+         *  - Player moves in small steps and is pushed out along the shortest axis
+         *  - Enterable landmarks keep their front doorway open
+         *  - ?colliders=1 (or press C) draws the collision volumes for debugging
+         * ====================================================================== */
+        let collisionBoxes = [];
+        let collisionCircles = [];
+        let waterZones = [];
+        let colliderDebugGroup = null;
+        let showColliderDebug = new URLSearchParams(location.search).has('colliders');
+        const PLAYER_COLLIDE_RADIUS = 0.62;
+
+        /* ======================================================================
          * 3D SCENE MODELING UPGRADE KIT (v2)
          *  - Cinematic dusk sky dome + PMREM environment reflections
          *  - Procedural PBR facade / ground textures with emissive windows
@@ -2689,6 +2704,7 @@
             bench.position.set(x, 0, z);
             bench.rotation.y = rotY;
             cityLandmarkGroup.add(bench);
+            addBoxCollider(x, z, 2.65, 0.95, rotY, 'bench');
         }
 
         function addFlowerPlanter(x, z, scale = 1) {
@@ -2718,6 +2734,197 @@
             }
             group.position.set(x, 0, z);
             cityLandmarkGroup.add(group);
+            addCircleCollider(x, z, 1.05 * scale, 'flower-planter');
+        }
+
+        // ----------------------------------------------------------------------
+        // Collision world helpers
+        // ----------------------------------------------------------------------
+        function resetCollisionWorld() {
+            collisionBoxes = [];
+            collisionCircles = [];
+            waterZones = [];
+            clearColliderDebug();
+        }
+
+        function addBoxCollider(x, z, width, depth, rotY = 0, label = 'solid') {
+            collisionBoxes.push({
+                x, z,
+                hw: width * 0.5,
+                hd: depth * 0.5,
+                rotY,
+                label
+            });
+        }
+
+        function addCircleCollider(x, z, radius, label = 'solid') {
+            collisionCircles.push({ x, z, r: radius, label });
+        }
+
+        function addWaterZone(minX, maxX, minZ, maxZ, label = 'water', piers = []) {
+            waterZones.push({ minX, maxX, minZ, maxZ, label, piers });
+        }
+
+        function isInWaterZone(x, z) {
+            for (let i = 0; i < waterZones.length; i++) {
+                const zone = waterZones[i];
+                if (x < zone.minX || x > zone.maxX || z < zone.minZ || z > zone.maxZ) continue;
+                // A registered pier / jetty keeps a dry walkable strip across the water.
+                for (let p = 0; p < zone.piers.length; p++) {
+                    const pier = zone.piers[p];
+                    if (x >= pier.minX && x <= pier.maxX && z >= pier.minZ && z <= pier.maxZ) return false;
+                }
+                return true;
+            }
+            return false;
+        }
+
+        function pushPlayerOutOfBox(pos, box) {
+            const c = Math.cos(box.rotY);
+            const s = Math.sin(box.rotY);
+            const dx = pos.x - box.x;
+            const dz = pos.z - box.z;
+            // world -> local (three.js rotation.y)
+            let lx = dx * c - dz * s;
+            let lz = dx * s + dz * c;
+            const qx = Math.max(-box.hw, Math.min(box.hw, lx));
+            const qz = Math.max(-box.hd, Math.min(box.hd, lz));
+            const ox = lx - qx;
+            const oz = lz - qz;
+            const d2 = ox * ox + oz * oz;
+            if (d2 > PLAYER_COLLIDE_RADIUS * PLAYER_COLLIDE_RADIUS) return false;
+
+            if (d2 > 1e-8) {
+                const dist = Math.sqrt(d2);
+                const push = PLAYER_COLLIDE_RADIUS - dist;
+                lx += (ox / dist) * push;
+                lz += (oz / dist) * push;
+            } else {
+                // Center is inside the box: eject through the nearest face.
+                const toLeft = lx + box.hw;
+                const toRight = box.hw - lx;
+                const toBack = lz + box.hd;
+                const toFront = box.hd - lz;
+                const shortest = Math.min(toLeft, toRight, toBack, toFront);
+                if (shortest === toLeft) lx = -box.hw - PLAYER_COLLIDE_RADIUS;
+                else if (shortest === toRight) lx = box.hw + PLAYER_COLLIDE_RADIUS;
+                else if (shortest === toBack) lz = -box.hd - PLAYER_COLLIDE_RADIUS;
+                else lz = box.hd + PLAYER_COLLIDE_RADIUS;
+            }
+
+            // local -> world
+            pos.x = box.x + lx * c + lz * s;
+            pos.z = box.z - lx * s + lz * c;
+            return true;
+        }
+
+        function pushPlayerOutOfCircle(pos, circle) {
+            const dx = pos.x - circle.x;
+            const dz = pos.z - circle.z;
+            const minDist = circle.r + PLAYER_COLLIDE_RADIUS;
+            const d2 = dx * dx + dz * dz;
+            if (d2 >= minDist * minDist) return false;
+            if (d2 < 1e-8) {
+                pos.x += minDist;
+                return true;
+            }
+            const dist = Math.sqrt(d2);
+            const push = minDist - dist;
+            pos.x += (dx / dist) * push;
+            pos.z += (dz / dist) * push;
+            return true;
+        }
+
+        function resolvePlayerCollisions(pos) {
+            for (let iteration = 0; iteration < 3; iteration++) {
+                let hit = false;
+                for (let i = 0; i < collisionBoxes.length; i++) {
+                    if (pushPlayerOutOfBox(pos, collisionBoxes[i])) hit = true;
+                }
+                for (let i = 0; i < collisionCircles.length; i++) {
+                    if (pushPlayerOutOfCircle(pos, collisionCircles[i])) hit = true;
+                }
+                if (!hit) break;
+            }
+        }
+
+        // Try the full diagonal move first, then axis-aligned fallbacks so the
+        // player slides along walls instead of sticking to them.
+        function movePlayerWithCollision(dx, dz) {
+            if (!playerMesh) return;
+            const startX = playerMesh.position.x;
+            const startZ = playerMesh.position.z;
+            const candidates = [[dx, dz], [dx, 0], [0, dz]];
+            for (let i = 0; i < candidates.length; i++) {
+                const stepX = candidates[i][0];
+                const stepZ = candidates[i][1];
+                if (Math.abs(stepX) + Math.abs(stepZ) < 1e-6) continue;
+                const trial = { x: startX + stepX, z: startZ + stepZ };
+                if (isInWaterZone(trial.x, trial.z)) continue;
+                resolvePlayerCollisions(trial);
+                if (!isInWaterZone(trial.x, trial.z)) {
+                    playerMesh.position.x = trial.x;
+                    playerMesh.position.z = trial.z;
+                    return;
+                }
+            }
+        }
+
+        function clearColliderDebug() {
+            if (!colliderDebugGroup) return;
+            colliderDebugGroup.traverse(node => {
+                if (node.geometry) node.geometry.dispose();
+                if (node.material) {
+                    const mats = Array.isArray(node.material) ? node.material : [node.material];
+                    mats.forEach(mat => mat.dispose());
+                }
+            });
+            scene.remove(colliderDebugGroup);
+            colliderDebugGroup = null;
+        }
+
+        function refreshColliderDebug() {
+            if (!scene) return;
+            clearColliderDebug();
+            if (!showColliderDebug) return;
+
+            colliderDebugGroup = new THREE.Group();
+            colliderDebugGroup.name = 'collider-debug';
+            const boxMat = new THREE.MeshBasicMaterial({
+                color: 0x22d3ee, wireframe: true, transparent: true, opacity: 0.85, depthTest: false
+            });
+            const circleMat = new THREE.MeshBasicMaterial({
+                color: 0xf472b6, wireframe: true, transparent: true, opacity: 0.85, depthTest: false
+            });
+            const waterMat = new THREE.MeshBasicMaterial({
+                color: 0x38bdf8, transparent: true, opacity: 0.16, side: THREE.DoubleSide, depthWrite: false, depthTest: false
+            });
+
+            collisionBoxes.forEach(box => {
+                const mesh = new THREE.Mesh(new THREE.BoxGeometry(box.hw * 2, 2.4, box.hd * 2), boxMat);
+                mesh.position.set(box.x, 1.2, box.z);
+                mesh.rotation.y = box.rotY;
+                mesh.renderOrder = 5;
+                colliderDebugGroup.add(mesh);
+            });
+            collisionCircles.forEach(circle => {
+                const mesh = new THREE.Mesh(new THREE.CylinderGeometry(circle.r, circle.r, 2.4, 20, 1, true), circleMat);
+                mesh.position.set(circle.x, 1.2, circle.z);
+                mesh.renderOrder = 5;
+                colliderDebugGroup.add(mesh);
+            });
+            waterZones.forEach(zone => {
+                const mesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(zone.maxX - zone.minX, zone.maxZ - zone.minZ),
+                    waterMat
+                );
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.position.set((zone.minX + zone.maxX) * 0.5, 0.08, (zone.minZ + zone.maxZ) * 0.5);
+                mesh.renderOrder = 6;
+                colliderDebugGroup.add(mesh);
+            });
+
+            scene.add(colliderDebugGroup);
         }
 
         function initThreeJS() {
@@ -2787,6 +2994,14 @@
                 if (state.mode !== '3d') return;
                 state.cam3D.distance = Math.max(7.5, Math.min(24, state.cam3D.distance + e.deltaY * 0.01));
             }, { passive: true });
+
+            window.addEventListener('keydown', (e) => {
+                if (state.mode !== '3d') return;
+                if (e.key === 'c' || e.key === 'C') {
+                    showColliderDebug = !showColliderDebug;
+                    refreshColliderDebug();
+                }
+            });
 
             // Cinematic dusk lighting: warm key light, cool sky fill and a soft rim light
             const hemiLight = new THREE.HemisphereLight(0xb4cdea, 0x161e2c, 0.20);
@@ -3479,6 +3694,7 @@
 
                 treeGroup.position.set(tx, 0, tz);
                 cityLandmarkGroup.add(treeGroup);
+                addCircleCollider(tx, tz, 1.52 * scale, 'tree-planter');
             });
         }
 
@@ -3501,6 +3717,10 @@
             }
             dynamicCityProps = [];
             scatteredEvidenceMeshes = [];
+            resetCollisionWorld();
+            // Central podium and memorial stone exist in every city.
+            addCircleCollider(0, 0, 2.95, 'negotiation-podium');
+            addBoxCollider(0, -14.8, 3.3, 1.9, 0, 'history-monument');
 
             const cityObj = CITIES_DATA.find(c => c.id === cityId);
             if (cityObj) {
@@ -3727,6 +3947,26 @@
                 bGroup.position.set(x, 0, z);
                 bGroup.rotation.y = rotY;
                 cityLandmarkGroup.add(bGroup);
+
+                // Register the walls as separate OBBs so the front doorway stays walkable.
+                const cosR = Math.cos(rotY);
+                const sinR = Math.sin(rotY);
+                const localToWorld = (lx, lz) => ({
+                    x: x + lx * cosR + lz * sinR,
+                    z: z - lx * sinR + lz * cosR
+                });
+                const backCenter = localToWorld(0, -d / 2 + wallThick / 2);
+                addBoxCollider(backCenter.x, backCenter.z, w, wallThick, rotY, 'building-back');
+                const leftCenter = localToWorld(-w / 2 + wallThick / 2, 0);
+                const rightCenter = localToWorld(w / 2 - wallThick / 2, 0);
+                addBoxCollider(leftCenter.x, leftCenter.z, wallThick, d, rotY, 'building-side');
+                addBoxCollider(rightCenter.x, rightCenter.z, wallThick, d, rotY, 'building-side');
+                if (sideFrontW > 0.2) {
+                    const frontLeftCenter = localToWorld(-w / 2 + sideFrontW / 2, d / 2 - wallThick / 2);
+                    const frontRightCenter = localToWorld(w / 2 - sideFrontW / 2, d / 2 - wallThick / 2);
+                    addBoxCollider(frontLeftCenter.x, frontLeftCenter.z, sideFrontW, wallThick, rotY, 'building-front');
+                    addBoxCollider(frontRightCenter.x, frontRightCenter.z, sideFrontW, wallThick, rotY, 'building-front');
+                }
             }
 
             // Helper: Rich Multi-Ring Plaza Paving, Compass Rose & City-Specific Surrounding Houses
@@ -3868,6 +4108,7 @@
                 const haussTex = createArchitecturalTexture('haussmann');
                 const tropicalTex = createArchitecturalTexture('colonial_tropical');
                 const flemishTex = createArchitecturalTexture('flemish_brick');
+                const parisChimneyData = [];
 
                 for (let i = 0; i < 42; i++) {
                     const ang = (i / 42) * Math.PI * 2;
@@ -3882,6 +4123,11 @@
                     const houseX = Math.cos(ang) * dist;
                     const houseZ = Math.sin(ang) * dist;
                     const houseGroup = new THREE.Group();
+
+                    // Keep the new waterfronts clear of district blocks.
+                    if (cityStyle === 'sanfrancisco' && houseZ < -34) continue;
+                    if (cityStyle === 'bangkok' && houseX > 34) continue;
+                    if (cityStyle === 'geneva' && houseX > 18 && houseZ < 12) continue;
 
                     // Check if any scattered evidence is placed inside this outer district block (near SE quadrant)
                     const isEnterableOuterBlock = (i === 5);
@@ -3921,6 +4167,16 @@
                         mansard.position.y = bh + 1.6;
                         mansard.rotation.y = Math.PI / 4;
                         houseGroup.add(mansard);
+                        // Zinc chimney stacks on the mansard, a signature of the Paris skyline.
+                        // Store world transforms and build them as two instanced meshes later.
+                        const chimneyYaw = Math.atan2(-houseX, -houseZ);
+                        for (let ch = 0; ch < 3; ch++) {
+                            const lx = -2.55 + ch * 2.45;
+                            const lz = -1.55;
+                            const wx = houseX + lx * Math.cos(chimneyYaw) + lz * Math.sin(chimneyYaw);
+                            const wz = houseZ - lx * Math.sin(chimneyYaw) + lz * Math.cos(chimneyYaw);
+                            parisChimneyData.push({ x: wx, z: wz, y: bh + 2.72, rot: chimneyYaw });
+                        }
                     } else if (cityStyle === 'geneva') {
                         // 日內瓦：瑞士湖畔古典米白飯店與阿爾卑斯斜頂木石山屋
                         const bw = 7.8, bd = 7.2, bh = 8.2 + (i % 3) * 1.8;
@@ -4003,6 +4259,44 @@
                     houseGroup.position.set(houseX, 0, houseZ);
                     houseGroup.lookAt(0, 0, 0);
                     cityLandmarkGroup.add(houseGroup);
+
+                    const outerFootprints = {
+                        paris: [8.5, 7.6],
+                        geneva: [7.8, 7.3],
+                        sanfrancisco: [5.4, 9.6],
+                        bandung: [8.2, 7.5],
+                        bangkok: [7.4, 7.1],
+                        helsinki: [8.4, 7.3],
+                        brussels: [6.2, 7.6]
+                    };
+                    const fp = outerFootprints[cityStyle] || [8, 7.5];
+                    const outwardYaw = Math.atan2(-houseX, -houseZ);
+                    addBoxCollider(houseX, houseZ, fp[0], fp[1], outwardYaw, 'outer-district-house');
+                }
+
+                if (parisChimneyData.length > 0) {
+                    const stackGeo = new THREE.BoxGeometry(0.55, 1.55, 0.55);
+                    const stackMat = new THREE.MeshStandardMaterial({ color: 0xb9b2a6, roughness: 0.72 });
+                    const capGeo = new THREE.BoxGeometry(0.74, 0.14, 0.74);
+                    const capMat = new THREE.MeshStandardMaterial({ color: 0x57534e, roughness: 0.6 });
+                    const stacks = new THREE.InstancedMesh(stackGeo, stackMat, parisChimneyData.length);
+                    const caps = new THREE.InstancedMesh(capGeo, capMat, parisChimneyData.length);
+                    const dummy = new THREE.Object3D();
+                    parisChimneyData.forEach((d, idx) => {
+                        dummy.position.set(d.x, d.y, d.z);
+                        dummy.rotation.set(0, d.rot, 0);
+                        dummy.scale.set(1, 1, 1);
+                        dummy.updateMatrix();
+                        stacks.setMatrixAt(idx, dummy.matrix);
+                        dummy.position.set(d.x, d.y + 0.8, d.z);
+                        dummy.updateMatrix();
+                        caps.setMatrixAt(idx, dummy.matrix);
+                    });
+                    stacks.instanceMatrix.needsUpdate = true;
+                    caps.instanceMatrix.needsUpdate = true;
+                    stacks.castShadow = true;
+                    cityLandmarkGroup.add(stacks);
+                    cityLandmarkGroup.add(caps);
                 }
             }
 
@@ -4049,6 +4343,7 @@
                     if (Math.sin(ang) > 0.94 && Math.abs(Math.cos(ang)) < 0.35) continue;
                     const px = Math.cos(ang) * r;
                     const pz = Math.sin(ang) * r;
+                    addCircleCollider(px, pz, 0.34, 'street-lamp');
 
                     dummy.position.set(px, 0.05, pz);
                     dummy.rotation.set(-Math.PI / 2, 0, 0);
@@ -4387,8 +4682,122 @@
                         bldg.add(mansard);
                         bldg.position.set(bx, 0, bz);
                         cityLandmarkGroup.add(bldg);
+                        addBoxCollider(bx, bz, 9.2, 11.2, 0, 'boulevard-building');
                     });
                 });
+
+                // Solid collision volumes for the landmarks that are not enterable.
+                [-4.05, 4.05].forEach(px => addBoxCollider(px, 29, 3.5, 5.2, 0, 'arc-de-triomphe-pier'));
+                [[-6.4, -6.4], [6.4, -6.4], [-6.4, 6.4], [6.4, 6.4]].forEach(([lx, lz]) => {
+                    addBoxCollider(lx * 0.94, -37 + lz * 0.94, 3.4 * 0.94, 3.4 * 0.94, 0, 'eiffel-tower-foot');
+                });
+                addBoxCollider(0, -23, 5.2, 11, 0, 'champ-de-mars-reflecting-pool');
+
+                // Wallace Fountain: the small dark-green cast-iron drinking fountain found all over Paris.
+                const wallace = new THREE.Group();
+                const wallaceGreen = new THREE.MeshStandardMaterial({ color: 0x14532d, metalness: 0.52, roughness: 0.42 });
+                const wallaceBase = new THREE.Mesh(new THREE.CylinderGeometry(0.98, 1.08, 0.26, 8), wallaceGreen);
+                wallaceBase.position.y = 0.13;
+                wallaceBase.castShadow = true;
+                wallace.add(wallaceBase);
+                const wallacePedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.38, 0.55, 1.28, 8), wallaceGreen);
+                wallacePedestal.position.y = 0.9;
+                wallace.add(wallacePedestal);
+                for (let w = 0; w < 4; w++) {
+                    const wa = (w / 4) * Math.PI * 2 + Math.PI / 4;
+                    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.18, 1.12, 6), wallaceGreen);
+                    body.position.set(Math.cos(wa) * 0.46, 1.62, Math.sin(wa) * 0.46);
+                    wallace.add(body);
+                    const head = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6), wallaceGreen);
+                    head.position.set(Math.cos(wa) * 0.46, 2.22, Math.sin(wa) * 0.46);
+                    wallace.add(head);
+                }
+                const wallaceDome = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.78, 16, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+                    wallaceGreen
+                );
+                wallaceDome.position.y = 2.36;
+                wallaceDome.scale.y = 0.78;
+                wallace.add(wallaceDome);
+                const wallaceFinial = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.62, 8), wallaceGreen);
+                wallaceFinial.position.y = 3.08;
+                wallace.add(wallaceFinial);
+                for (let wb = 0; wb < 4; wb++) {
+                    const ba = (wb / 4) * Math.PI * 2;
+                    const basin = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.62, 0.16, 12), wallaceGreen);
+                    basin.position.set(Math.cos(ba) * 1.02, 0.92, Math.sin(ba) * 1.02);
+                    wallace.add(basin);
+                    const water = new THREE.Mesh(
+                        new THREE.CylinderGeometry(0.44, 0.44, 0.03, 12),
+                        new THREE.MeshStandardMaterial({ color: 0x7dd3fc, roughness: 0.12, metalness: 0.3 })
+                    );
+                    water.position.set(Math.cos(ba) * 1.02, 0.99, Math.sin(ba) * 1.02);
+                    wallace.add(water);
+                }
+                wallace.position.set(13, 0, 8);
+                cityLandmarkGroup.add(wallace);
+                addCircleCollider(13, 8, 1.18, 'wallace-fountain');
+
+                // Morris advertising column: dark green cylinder with three poster panels and a domed cap.
+                const morris = new THREE.Group();
+                const morrisPosterCanvas = makeCanvas(768, 512);
+                const mpc = morrisPosterCanvas.getContext('2d');
+                mpc.fillStyle = '#eee3c8';
+                mpc.fillRect(0, 0, 768, 512);
+                const posterTitles = ['OPÉRA', 'PARIS', 'EXPOSITION'];
+                const posterColors = ['#7f1d1d', '#1e3a5f', '#3f6212'];
+                for (let p = 0; p < 3; p++) {
+                    const px0 = 20 + p * 248;
+                    mpc.fillStyle = posterColors[p];
+                    mpc.fillRect(px0, 24, 220, 464);
+                    mpc.strokeStyle = '#d4af37';
+                    mpc.lineWidth = 8;
+                    mpc.strokeRect(px0 + 14, 38, 192, 436);
+                    mpc.fillStyle = '#f8f1df';
+                    mpc.font = 'bold 38px Georgia, serif';
+                    mpc.textAlign = 'center';
+                    mpc.fillText(posterTitles[p], px0 + 110, 150);
+                    mpc.font = '20px Georgia, serif';
+                    mpc.fillText('THÉÂTRE  ·  SAISON', px0 + 110, 210);
+                    mpc.fillText('1900', px0 + 110, 260);
+                }
+                const morrisPosterTex = textureFromCanvas(morrisPosterCanvas);
+                const morrisBody = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.12, 1.12, 3.5, 24, 1, true),
+                    new THREE.MeshStandardMaterial({ map: morrisPosterTex, roughness: 0.52, metalness: 0.08 })
+                );
+                morrisBody.position.y = 2.15;
+                morrisBody.castShadow = true;
+                morris.add(morrisBody);
+                const morrisPlinth = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.3, 1.44, 0.4, 20),
+                    new THREE.MeshStandardMaterial({ color: 0x14532d, metalness: 0.45, roughness: 0.45 })
+                );
+                morrisPlinth.position.y = 0.2;
+                morrisPlinth.castShadow = true;
+                morris.add(morrisPlinth);
+                const morrisCornice = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.28, 1.18, 0.24, 20),
+                    new THREE.MeshStandardMaterial({ color: 0x14532d, metalness: 0.5, roughness: 0.4 })
+                );
+                morrisCornice.position.y = 4.02;
+                morris.add(morrisCornice);
+                const morrisDome = new THREE.Mesh(
+                    new THREE.SphereGeometry(1.24, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+                    new THREE.MeshStandardMaterial({ color: 0x14532d, metalness: 0.48, roughness: 0.45 })
+                );
+                morrisDome.position.y = 4.12;
+                morrisDome.scale.y = 0.72;
+                morris.add(morrisDome);
+                const morrisFinial = new THREE.Mesh(
+                    new THREE.ConeGeometry(0.18, 0.8, 8),
+                    new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.25 })
+                );
+                morrisFinial.position.y = 5.12;
+                morris.add(morrisFinial);
+                morris.position.set(-13, 0, 7);
+                cityLandmarkGroup.add(morris);
+                addCircleCollider(-13, 7, 1.48, 'morris-column');
             }
 
             // ------------------------------------------------------------------------
@@ -4536,19 +4945,19 @@
 
                 // Distinct Lake Geneva Shoreline, Stone Seawall, Wooden Pier & Sailboats!
                 const lake = new THREE.Mesh(
-                    new THREE.PlaneGeometry(110, 110),
+                    new THREE.PlaneGeometry(110, 80),
                     makeWaterMaterial(0x0d4f74)
                 );
                 lake.rotation.x = -Math.PI / 2;
-                lake.position.set(75, 0.02, -12);
+                lake.position.set(75, 0.02, -27);
                 cityLandmarkGroup.add(lake);
 
                 // Stone Seawall Promenade along X = 19.5
                 const seawall = new THREE.Mesh(
-                    new THREE.BoxGeometry(1.6, 0.85, 85),
+                    new THREE.BoxGeometry(1.6, 0.85, 80),
                     new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.5 })
                 );
-                seawall.position.set(19.5, 0.42, -12);
+                seawall.position.set(19.5, 0.42, -27);
                 cityLandmarkGroup.add(seawall);
 
                 // Wooden Pier Extending into Lake Geneva right to the evidence at (24, -15)
@@ -4676,6 +5085,139 @@
                     mountain.position.set(mx, 0, mz);
                     cityLandmarkGroup.add(mountain);
                 });
+
+                // Solid collision volumes for Geneva landmarks
+                addCircleCollider(14.5, 5.5, 3.55, 'flower-clock');
+                addBoxCollider(0, -28, 28, 10.5, 0, 'palais-des-nations');
+                addBoxCollider(-9, -19, 4.7, 3.3, -1.15, 'broken-chair');
+
+                // Broken Chair sculpture on the Place des Nations: a giant wooden chair with one severed leg.
+                const brokenChair = new THREE.Group();
+                const chairMat = new THREE.MeshStandardMaterial({ color: 0xb08968, roughness: 0.62, metalness: 0.04 });
+                const chairDarkMat = new THREE.MeshStandardMaterial({ color: 0x7a5230, roughness: 0.66 });
+                const chairLegMat = new THREE.MeshStandardMaterial({ color: 0x6b4a2c, roughness: 0.68 });
+                const chairPlinth = new THREE.Mesh(new THREE.BoxGeometry(4.3, 0.34, 3.1), chairDarkMat);
+                chairPlinth.position.y = 0.17;
+                chairPlinth.receiveShadow = true;
+                brokenChair.add(chairPlinth);
+                const chairSeat = new THREE.Mesh(new THREE.BoxGeometry(3.7, 0.42, 2.9), chairMat);
+                chairSeat.position.y = 4.0;
+                chairSeat.castShadow = true;
+                brokenChair.add(chairSeat);
+                const chairBack = new THREE.Group();
+                const chairBackRail = new THREE.Mesh(new THREE.BoxGeometry(3.55, 0.42, 0.36), chairMat);
+                chairBackRail.position.set(0, 8.42, 0);
+                chairBack.add(chairBackRail);
+                [-1.56, 1.56].forEach(bx => {
+                    const backPost = new THREE.Mesh(new THREE.BoxGeometry(0.38, 4.65, 0.36), chairMat);
+                    backPost.position.set(bx, 6.2, 0);
+                    chairBack.add(backPost);
+                });
+                // Vertical slats with gaps: reads as a chair from every angle, not a solid billboard.
+                const slatGeo = new THREE.BoxGeometry(0.44, 4.25, 0.24);
+                const slats = new THREE.InstancedMesh(slatGeo, chairMat, 5);
+                const slatDummy = new THREE.Object3D();
+                for (let sb = 0; sb < 5; sb++) {
+                    slatDummy.position.set(-1.32 + sb * 0.66, 6.15, 0);
+                    slatDummy.updateMatrix();
+                    slats.setMatrixAt(sb, slatDummy.matrix);
+                }
+                slats.instanceMatrix.needsUpdate = true;
+                slats.castShadow = true;
+                chairBack.add(slats);
+                chairBack.position.set(0, 0, -1.38);
+                chairBack.rotation.x = -0.07;
+                brokenChair.add(chairBack);
+                // Three intact legs + the characteristic shattered fourth leg.
+                [[-1.36, 0.98], [1.36, 0.98], [-1.36, -0.98]].forEach(([lx, lz]) => {
+                    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.58, 3.8, 0.58), chairLegMat);
+                    leg.position.set(lx, 1.95, lz);
+                    leg.castShadow = true;
+                    brokenChair.add(leg);
+                });
+                const brokenStump = new THREE.Mesh(new THREE.BoxGeometry(0.58, 1.1, 0.58), chairLegMat);
+                brokenStump.position.set(1.36, 0.72, 0.98);
+                brokenStump.rotation.z = -0.08;
+                brokenChair.add(brokenStump);
+                const snappedEnd = new THREE.Mesh(new THREE.ConeGeometry(0.31, 0.55, 5), chairDarkMat);
+                snappedEnd.position.set(1.36, 0.18, 0.98);
+                snappedEnd.rotation.x = Math.PI;
+                brokenChair.add(snappedEnd);
+                brokenChair.position.set(-9, 0, -19);
+                brokenChair.rotation.y = -1.15;
+                brokenChair.scale.setScalar(1.18);
+                cityLandmarkGroup.add(brokenChair);
+
+                // Lake Geneva passenger steamer with a black funnel, paddle wheel and Swiss flag.
+                const steamer = new THREE.Group();
+                const steamerWhite = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.34, metalness: 0.08 });
+                const steamerHull = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.1, 9.6), steamerWhite);
+                steamerHull.position.y = 0.55;
+                steamer.add(steamerHull);
+                const steamerDeck = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.18, 7.2), new THREE.MeshStandardMaterial({ color: 0xd6c3a1, roughness: 0.6 }));
+                steamerDeck.position.y = 1.16;
+                steamer.add(steamerDeck);
+                const steamerCabin = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.25, 3.4), steamerWhite);
+                steamerCabin.position.set(0, 1.85, 0.4);
+                steamer.add(steamerCabin);
+                const steamerFunnel = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 1.5, 12), new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.6 }));
+                steamerFunnel.position.set(0, 3.1, -1.3);
+                steamerFunnel.rotation.z = -0.03;
+                steamer.add(steamerFunnel);
+                const funnelBand = new THREE.Mesh(new THREE.CylinderGeometry(0.39, 0.39, 0.25, 12), new THREE.MeshStandardMaterial({ color: 0xb91c1c }));
+                funnelBand.position.set(0, 3.42, -1.3);
+                steamer.add(funnelBand);
+                const paddleWheel = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.05, 1.05, 0.28, 16),
+                    new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.7 })
+                );
+                paddleWheel.rotation.z = Math.PI / 2;
+                paddleWheel.position.set(-1.45, 0.75, -3.0);
+                steamer.add(paddleWheel);
+                const swissFlagCanvas = makeCanvas(128, 128);
+                const sfc = swissFlagCanvas.getContext('2d');
+                sfc.fillStyle = '#d52b1e';
+                sfc.fillRect(0, 0, 128, 128);
+                sfc.fillStyle = '#ffffff';
+                sfc.fillRect(52, 28, 24, 72);
+                sfc.fillRect(28, 52, 72, 24);
+                const swissFlagTex = textureFromCanvas(swissFlagCanvas);
+                const swissFlag = new THREE.Mesh(
+                    new THREE.PlaneGeometry(1.1, 1.1),
+                    new THREE.MeshStandardMaterial({ map: swissFlagTex, side: THREE.DoubleSide, roughness: 0.8 })
+                );
+                swissFlag.position.set(0, 3.9, -1.85);
+                steamer.add(swissFlag);
+                steamer.position.set(47, 0.05, -20);
+                steamer.rotation.y = 0.22;
+                cityLandmarkGroup.add(steamer);
+                dynamicCityProps.push({ type: 'boat', mesh: steamer, baseZ: -20, phase: 2.1 });
+
+                // A broad Mont Blanc massif to anchor the alpine horizon behind the lake.
+                const montBlanc = new THREE.Group();
+                [[0, 0, 46, 58], [-22, -8, 32, 46], [24, -4, 28, 40]].forEach(([mx, mz, rad, h]) => {
+                    const rock = new THREE.Mesh(
+                        new THREE.ConeGeometry(rad, h, 8),
+                        new THREE.MeshStandardMaterial({ color: 0x536273, roughness: 0.92 })
+                    );
+                    rock.position.set(mx, h / 2, mz);
+                    montBlanc.add(rock);
+                    const snow = new THREE.Mesh(
+                        new THREE.ConeGeometry(rad * 0.52, h * 0.5, 8),
+                        new THREE.MeshStandardMaterial({ color: 0xf2f7fc, roughness: 0.4 })
+                    );
+                    snow.position.set(mx, h * 0.75, mz);
+                    montBlanc.add(snow);
+                });
+                montBlanc.position.set(62, 0, -104);
+                cityLandmarkGroup.add(montBlanc);
+
+                // Lake is walk-off limits, except the wooden pier and its gazebo.
+                addWaterZone(19.8, 130, -67, 13, 'lake-geneva', [
+                    { minX: 18.8, maxX: 32.8, minZ: -17.2, maxZ: -12.8 }
+                ]);
+                addBoxCollider(19.5, -42.1, 1.6, 49.8, 0, 'geneva-seawall');
+                addBoxCollider(19.5, 0.1, 1.6, 25.8, 0, 'geneva-seawall');
             }
 
             // ------------------------------------------------------------------------
@@ -4886,7 +5428,132 @@
                         house.add(finial);
                         house.position.set(-25, 0, hz);
                         cityLandmarkGroup.add(house);
+                        addBoxCollider(-23.35, hz, 6.4, 6.2, 0, 'painted-lady');
                     }
+                });
+
+                // San Francisco Bay is off-limits except the timber pier.
+                addWaterZone(-140, 140, -155, -35, 'san-francisco-bay', [
+                    { minX: 18.4, maxX: 26.6, minZ: -40.2, maxZ: -25.8 }
+                ]);
+
+                // Coit Tower on its grassy Telegraph Hill knoll, white fluted Art Deco shaft.
+                const coitGroup = new THREE.Group();
+                const coitHill = new THREE.Mesh(
+                    new THREE.CylinderGeometry(5.2, 7.4, 1.7, 24),
+                    new THREE.MeshStandardMaterial({ color: 0x4d7c3a, roughness: 0.95 })
+                );
+                coitHill.position.y = 0.82;
+                coitHill.receiveShadow = true;
+                coitGroup.add(coitHill);
+                const coitStone = new THREE.Mesh(
+                    new THREE.CylinderGeometry(4.7, 5.3, 0.6, 24),
+                    new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.7 })
+                );
+                coitStone.position.y = 1.9;
+                coitGroup.add(coitStone);
+                const coitBody = new THREE.Mesh(
+                    new THREE.CylinderGeometry(2.35, 2.9, 10.8, 24),
+                    new THREE.MeshStandardMaterial({ color: 0xf1f0e8, roughness: 0.42 })
+                );
+                coitBody.position.y = 7.6;
+                coitBody.castShadow = true;
+                coitGroup.add(coitBody);
+                const coitGallery = new THREE.Mesh(
+                    new THREE.CylinderGeometry(2.55, 2.4, 1.2, 24),
+                    new THREE.MeshStandardMaterial({ color: 0xf8f7ef, roughness: 0.4 })
+                );
+                coitGallery.position.y = 13.6;
+                coitGroup.add(coitGallery);
+                for (let cw = 0; cw < 8; cw++) {
+                    const ca = (cw / 8) * Math.PI * 2;
+                    const archWindow = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.42, 0.92, 0.18),
+                        new THREE.MeshStandardMaterial({ color: 0x24384b, roughness: 0.25, metalness: 0.2, emissive: 0x1a2a38, emissiveIntensity: 0.25 })
+                    );
+                    archWindow.position.set(Math.cos(ca) * 2.43, 13.75, Math.sin(ca) * 2.43);
+                    archWindow.rotation.y = -ca;
+                    coitGroup.add(archWindow);
+                }
+                for (let cr = 0; cr < 12; cr++) {
+                    const ra = (cr / 12) * Math.PI * 2;
+                    const rib = new THREE.Mesh(
+                        new THREE.BoxGeometry(0.16, 10.4, 0.22),
+                        new THREE.MeshStandardMaterial({ color: 0xe4e2d8, roughness: 0.5 })
+                    );
+                    rib.position.set(Math.cos(ra) * 2.72, 7.6, Math.sin(ra) * 2.72);
+                    rib.rotation.y = -ra;
+                    coitGroup.add(rib);
+                }
+                const coitCrown = new THREE.Mesh(
+                    new THREE.CylinderGeometry(2.65, 2.65, 0.28, 24),
+                    new THREE.MeshStandardMaterial({ color: 0xd6d3c8, roughness: 0.5 })
+                );
+                coitCrown.position.y = 14.35;
+                coitGroup.add(coitCrown);
+                coitGroup.position.set(35, 0, -25);
+                cityLandmarkGroup.add(coitGroup);
+                addCircleCollider(35, -25, 7.3, 'coit-tower-hill');
+
+                // Powell Street cable car with rails, grip mechanism and a painted destination board.
+                const cableCar = new THREE.Group();
+                const cableRed = new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.48, metalness: 0.25 });
+                const cableCream = new THREE.MeshStandardMaterial({ color: 0xf5e9cf, roughness: 0.52 });
+                const cableDark = new THREE.MeshStandardMaterial({ color: 0x1f2937, roughness: 0.62, metalness: 0.4 });
+                [-1.45, 1.45].forEach(rx => {
+                    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.1, 23), cableDark);
+                    rail.position.set(rx, 0.08, 0);
+                    cableCar.add(rail);
+                });
+                for (let cs = 0; cs < 10; cs++) {
+                    const sleeper = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.1, 0.3), new THREE.MeshStandardMaterial({ color: 0x6b4423, roughness: 0.85 }));
+                    sleeper.position.set(0, 0.03, -10 + cs * 2.2);
+                    cableCar.add(sleeper);
+                }
+                const carBody = new THREE.Mesh(new THREE.BoxGeometry(2.5, 2.35, 4.6), cableRed);
+                carBody.position.y = 1.45;
+                carBody.castShadow = true;
+                cableCar.add(carBody);
+                const carRoof = new THREE.Mesh(new THREE.BoxGeometry(2.7, 0.2, 4.9), cableCream);
+                carRoof.position.y = 2.75;
+                cableCar.add(carRoof);
+                const carWindowBand = new THREE.Mesh(
+                    new THREE.BoxGeometry(2.53, 0.95, 3.6),
+                    facadeMaterial(createArchitecturalTexture('glass_curtain'), {
+                        metalness: 0.4, roughness: 0.24, emissiveIntensity: 0.3
+                    })
+                );
+                carWindowBand.position.y = 1.95;
+                cableCar.add(carWindowBand);
+                const carStep = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.18, 1.1), cableCream);
+                carStep.position.set(0, 0.5, 2.55);
+                cableCar.add(carStep);
+                const carBell = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.12, 8, 6),
+                    new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.8, roughness: 0.25 })
+                );
+                carBell.position.set(0, 2.55, 2.45);
+                cableCar.add(carBell);
+                cableCar.position.set(25.5, 0, 2);
+                cityLandmarkGroup.add(cableCar);
+                addBoxCollider(25.5, 2, 2.7, 5.2, 0, 'cable-car');
+
+                // Low fog banks rolling across the Golden Gate.
+                [0xdfe9f3, 0xe8f0f7, 0xdbe6f0].forEach((fogHex, fi) => {
+                    const fog = new THREE.Mesh(
+                        new THREE.PlaneGeometry(92 - fi * 10, 9 + fi * 2),
+                        new THREE.MeshBasicMaterial({
+                            color: fogHex,
+                            transparent: true,
+                            opacity: 0.11,
+                            depthWrite: false,
+                            side: THREE.DoubleSide
+                        })
+                    );
+                    fog.position.set(-6 + fi * 22, 3.4 + fi * 0.8, -52 - fi * 12);
+                    fog.rotation.y = 0.14 * (fi - 1);
+                    fog.renderOrder = 2;
+                    cityLandmarkGroup.add(fog);
                 });
             }
 
@@ -4946,6 +5613,7 @@
                     trunk.rotation.z = 0.04 * (palmIdx % 2 === 0 ? 1 : -1);
                     trunk.castShadow = true;
                     cityLandmarkGroup.add(trunk);
+                    addCircleCollider(px, pz, 0.5, 'palm-trunk');
 
                     for (let band = 0; band < 5; band++) {
                         palmDummy.position.set(px, 0.9 + band * 1.35, pz);
@@ -4995,6 +5663,58 @@
                 nutMatrices.forEach((m, i) => nutsInst.setMatrixAt(i, m));
                 nutsInst.instanceMatrix.needsUpdate = true;
                 cityLandmarkGroup.add(nutsInst);
+
+                addCircleCollider(-12.5, -23.1, 3.7, 'merdeka-corner-tower');
+
+                // Gilded "GEDUNG MERDEKA" lettering on the Art Deco front facade.
+                const signCanvas = makeCanvas(1024, 160);
+                const signCtx = signCanvas.getContext('2d');
+                signCtx.clearRect(0, 0, 1024, 160);
+                signCtx.font = 'bold 96px Georgia, "Times New Roman", serif';
+                signCtx.textAlign = 'center';
+                signCtx.textBaseline = 'middle';
+                signCtx.fillStyle = '#f6c34d';
+                signCtx.shadowColor = 'rgba(80,45,0,0.85)';
+                signCtx.shadowBlur = 10;
+                signCtx.fillText('GEDUNG MERDEKA', 512, 82);
+                const signTex = textureFromCanvas(signCanvas);
+                const signMesh = new THREE.Mesh(
+                    new THREE.PlaneGeometry(9.6, 1.5),
+                    new THREE.MeshBasicMaterial({ map: signTex, transparent: true, side: THREE.DoubleSide, depthWrite: false })
+                );
+                signMesh.position.set(0, 7.35, -21.58);
+                cityLandmarkGroup.add(signMesh);
+
+                // Tangkuban Perahu volcano silhouette north of the city, with a truncated crater.
+                const volcano = new THREE.Group();
+                const volcanoRock = new THREE.Mesh(
+                    new THREE.CylinderGeometry(5.5, 40, 36, 9),
+                    new THREE.MeshStandardMaterial({ color: 0x3f5546, roughness: 0.95 })
+                );
+                volcanoRock.position.y = 18;
+                volcano.add(volcanoRock);
+                const crater = new THREE.Mesh(
+                    new THREE.CylinderGeometry(4.2, 5.4, 1.2, 9),
+                    new THREE.MeshStandardMaterial({ color: 0x2a352c, roughness: 1.0 })
+                );
+                crater.position.y = 36.1;
+                volcano.add(crater);
+                const sulphur = new THREE.Mesh(
+                    new THREE.CylinderGeometry(2.4, 3.2, 0.5, 9),
+                    new THREE.MeshStandardMaterial({ color: 0xb7a06a, roughness: 0.95 })
+                );
+                sulphur.position.y = 36.75;
+                volcano.add(sulphur);
+                [[-28, -10, 18, 16], [26, -6, 22, 20]].forEach(([vx, vz, vr, vh]) => {
+                    const ridge = new THREE.Mesh(
+                        new THREE.ConeGeometry(vr, vh, 7),
+                        new THREE.MeshStandardMaterial({ color: 0x4c6152, roughness: 0.96 })
+                    );
+                    ridge.position.set(vx, vh / 2, vz);
+                    volcano.add(ridge);
+                });
+                volcano.position.set(0, 0, -122);
+                cityLandmarkGroup.add(volcano);
             }
 
             // ------------------------------------------------------------------------
@@ -5107,6 +5827,145 @@
                     roofFinial.position.set(tx, 11.9, -24.0);
                     cityLandmarkGroup.add(roofFinial);
                 });
+
+                addCircleCollider(0, -28.5, 5.05, 'golden-chedi');
+
+                // Chao Phraya River along the east edge of the plaza, with a stone quay.
+                const chaoPhraya = new THREE.Mesh(
+                    new THREE.PlaneGeometry(32, 100),
+                    makeWaterMaterial(0x0e4f76)
+                );
+                chaoPhraya.rotation.x = -Math.PI / 2;
+                chaoPhraya.position.set(52, 0.02, -5);
+                cityLandmarkGroup.add(chaoPhraya);
+                const thaiQuay = new THREE.Mesh(
+                    new THREE.BoxGeometry(1.9, 0.9, 100),
+                    new THREE.MeshStandardMaterial({ color: 0xd6d3c1, roughness: 0.6 })
+                );
+                thaiQuay.position.set(35.1, 0.45, -5);
+                thaiQuay.receiveShadow = true;
+                cityLandmarkGroup.add(thaiQuay);
+                const riverPier = new THREE.Mesh(
+                    new THREE.BoxGeometry(7.4, 0.32, 4.2),
+                    new THREE.MeshStandardMaterial({ color: 0x7c4a1e, roughness: 0.72 })
+                );
+                riverPier.position.set(34, 0.46, -8);
+                cityLandmarkGroup.add(riverPier);
+                for (let rp = 0; rp < 6; rp++) {
+                    [-1.7, 1.7].forEach(rpz => {
+                        const piling = new THREE.Mesh(
+                            new THREE.CylinderGeometry(0.16, 0.2, 1.5, 8),
+                            new THREE.MeshStandardMaterial({ color: 0x5b3517, roughness: 0.8 })
+                        );
+                        piling.position.set(31 + rp * 1.1, 0.72, -8 + rpz);
+                        cityLandmarkGroup.add(piling);
+                    });
+                }
+
+                // Long-tail boats with painted canopies and the characteristic long propeller shaft.
+                const buildLongTailBoat = (bx, bz, rot, accentHex) => {
+                    const boat = new THREE.Group();
+                    const hullMat = new THREE.MeshStandardMaterial({ color: 0x5b3517, roughness: 0.55 });
+                    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.85, 0.72, 8.2), hullMat);
+                    hull.position.y = 0.34;
+                    boat.add(hull);
+                    const bow = new THREE.Mesh(new THREE.ConeGeometry(0.92, 2.2, 4), hullMat);
+                    bow.rotation.x = -Math.PI / 2;
+                    bow.rotation.y = Math.PI / 4;
+                    bow.position.set(0, 0.34, 5.1);
+                    boat.add(bow);
+                    const stripe = new THREE.Mesh(
+                        new THREE.BoxGeometry(1.9, 0.16, 6.4),
+                        new THREE.MeshStandardMaterial({ color: accentHex, roughness: 0.5 })
+                    );
+                    stripe.position.y = 0.65;
+                    boat.add(stripe);
+                    const canopy = new THREE.Mesh(
+                        new THREE.BoxGeometry(1.65, 0.12, 3.4),
+                        new THREE.MeshStandardMaterial({ color: accentHex, roughness: 0.62, side: THREE.DoubleSide })
+                    );
+                    canopy.position.set(0, 1.72, -0.5);
+                    boat.add(canopy);
+                    [[-0.72, 1.2], [0.72, 1.2], [-0.72, -2.0], [0.72, -2.0]].forEach(([px, pz]) => {
+                        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.35, 6), hullMat);
+                        post.position.set(px, 1.03, pz);
+                        boat.add(post);
+                    });
+                    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 3.4, 8), new THREE.MeshStandardMaterial({ color: 0x374151, metalness: 0.6, roughness: 0.4 }));
+                    shaft.rotation.x = Math.PI / 2;
+                    shaft.position.set(0, 0.72, -6.0);
+                    boat.add(shaft);
+                    const propeller = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.06, 6, 12), new THREE.MeshStandardMaterial({ color: 0x9ca3af, metalness: 0.7, roughness: 0.3 }));
+                    propeller.position.set(0, 0.72, -7.7);
+                    propeller.rotation.y = Math.PI / 2;
+                    boat.add(propeller);
+                    const thaiFlag = new THREE.Mesh(
+                        new THREE.PlaneGeometry(1.1, 0.7),
+                        new THREE.MeshStandardMaterial({ color: 0xb91c1c, side: THREE.DoubleSide })
+                    );
+                    thaiFlag.position.set(0.65, 2.4, -2.6);
+                    boat.add(thaiFlag);
+                    boat.position.set(bx, 0.05, bz);
+                    boat.rotation.y = rot;
+                    cityLandmarkGroup.add(boat);
+                    dynamicCityProps.push({ type: 'boat', mesh: boat, baseZ: bz, phase: bx * 0.1 });
+                };
+                buildLongTailBoat(48, -4, 0.35, 0xb91c1c);
+                buildLongTailBoat(56, -24, -0.42, 0x1d4ed8);
+
+                // Wat Arun across the river: white prang with coloured porcelain mosaic bands.
+                const watArun = new THREE.Group();
+                const watWhite = new THREE.MeshStandardMaterial({ color: 0xf5f1e6, roughness: 0.52 });
+                const watBrick = new THREE.MeshStandardMaterial({ color: 0x8a3f2c, roughness: 0.7 });
+                const watGold = new THREE.MeshStandardMaterial({ color: 0xd4af37, metalness: 0.65, roughness: 0.3 });
+                [[0, 0, 0, 8.6, 7.6, 1.2], [0, 0, 0, 7.2, 6.2, 1.4], [0, 0, 0, 5.6, 4.8, 1.5]].forEach(([tx, ty, tz, tw, td, th], ti) => {
+                    const terrace = new THREE.Mesh(new THREE.BoxGeometry(tw, th, td), ti % 2 === 0 ? watWhite : watBrick);
+                    terrace.position.y = 0.6 + ti * 1.4;
+                    watArun.add(terrace);
+                });
+                const centralPrang = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 2.7, 17.5, 4), watWhite);
+                centralPrang.rotation.y = Math.PI / 4;
+                centralPrang.position.y = 14.3;
+                centralPrang.castShadow = true;
+                watArun.add(centralPrang);
+                [8.1, 11.3, 14.5].forEach((cy, ci) => {
+                    const band = new THREE.Mesh(new THREE.CylinderGeometry(2.15 - ci * 0.28, 2.3 - ci * 0.28, 0.34, 4), ci % 2 === 0 ? watBrick : watGold);
+                    band.rotation.y = Math.PI / 4;
+                    band.position.y = cy;
+                    watArun.add(band);
+                });
+                const centralSpire = new THREE.Mesh(new THREE.ConeGeometry(1.55, 11.5, 4), watWhite);
+                centralSpire.rotation.y = Math.PI / 4;
+                centralSpire.position.y = 28.6;
+                watArun.add(centralSpire);
+                const spireTip = new THREE.Mesh(new THREE.ConeGeometry(0.34, 2.0, 8), watGold);
+                spireTip.position.y = 35.0;
+                watArun.add(spireTip);
+                [[-5.8, 5.8], [5.8, 5.8], [-5.8, -5.8], [5.8, -5.8]].forEach(([sx, sz]) => {
+                    const sidePrang = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.65, 9.0, 4), watWhite);
+                    sidePrang.rotation.y = Math.PI / 4;
+                    sidePrang.position.set(sx, 5.6, sz);
+                    watArun.add(sidePrang);
+                    const sideSpire = new THREE.Mesh(new THREE.ConeGeometry(0.85, 4.6, 4), watWhite);
+                    sideSpire.rotation.y = Math.PI / 4;
+                    sideSpire.position.set(sx, 12.4, sz);
+                    watArun.add(sideSpire);
+                });
+                const watFlagPole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 10, 8), watGold);
+                watFlagPole.position.set(0, 5, 7.8);
+                watArun.add(watFlagPole);
+                const watFlag = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 1.0), new THREE.MeshStandardMaterial({ color: 0xf59e0b, side: THREE.DoubleSide }));
+                watFlag.position.set(0.78, 8.6, 7.8);
+                watArun.add(watFlag);
+                watArun.position.set(72, 0, -12);
+                watArun.scale.setScalar(0.92);
+                cityLandmarkGroup.add(watArun);
+
+                addWaterZone(36, 68, -55, 45, 'chao-phraya-river', [
+                    { minX: 30, maxX: 38, minZ: -10.2, maxZ: -5.8 }
+                ]);
+                addBoxCollider(35.1, -32.6, 1.9, 44.8, 0, 'bangkok-quay');
+                addBoxCollider(35.1, 19.6, 1.9, 50.8, 0, 'bangkok-quay');
             }
 
             // ------------------------------------------------------------------------
@@ -5210,6 +6069,90 @@
 
                 cathedralDomes.position.set(0, 0, -29);
                 cityLandmarkGroup.add(cathedralDomes);
+
+                // Senate Square Christmas market: timber huts with snow-laden gable roofs and warm windows.
+                const marketWood = new THREE.MeshStandardMaterial({ color: 0x7c4a1e, roughness: 0.72 });
+                const marketSnow = new THREE.MeshStandardMaterial({ color: 0xf8fbff, roughness: 0.42 });
+                const marketGlow = new THREE.MeshBasicMaterial({ color: 0xffcf7a });
+                const marketHuts = [[-15, -17, 0.18], [-9, -18, -0.12], [9, -18, 0.12], [15, -17, -0.18]];
+                marketHuts.forEach(([hx, hz, hrot], hi) => {
+                    const hut = new THREE.Group();
+                    const body = new THREE.Mesh(new THREE.BoxGeometry(4.0, 2.6, 3.1), marketWood);
+                    body.position.y = 1.3;
+                    body.castShadow = true;
+                    hut.add(body);
+                    const roof = new THREE.Mesh(new THREE.ConeGeometry(3.3, 1.8, 4), marketSnow);
+                    roof.position.y = 3.45;
+                    roof.rotation.y = Math.PI / 4;
+                    roof.castShadow = true;
+                    hut.add(roof);
+                    const roofUnder = new THREE.Mesh(new THREE.ConeGeometry(3.05, 1.25, 4), new THREE.MeshStandardMaterial({ color: 0x8b3a2b, roughness: 0.6 }));
+                    roofUnder.position.y = 3.22;
+                    roofUnder.rotation.y = Math.PI / 4;
+                    hut.add(roofUnder);
+                    const window = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.95), marketGlow);
+                    window.position.set(0, 1.55, 1.57);
+                    hut.add(window);
+                    const awning = new THREE.Mesh(
+                        new THREE.BoxGeometry(2.2, 0.1, 0.8),
+                        new THREE.MeshStandardMaterial({ color: 0xb91c1c, roughness: 0.65 })
+                    );
+                    awning.position.set(0, 2.3, 1.75);
+                    awning.rotation.x = 0.18;
+                    hut.add(awning);
+                    const wreath = new THREE.Mesh(
+                        new THREE.TorusGeometry(0.32, 0.08, 8, 16),
+                        new THREE.MeshStandardMaterial({ color: 0x166534, roughness: 0.7 })
+                    );
+                    wreath.position.set(0, 2.0, 1.7);
+                    hut.add(wreath);
+                    hut.position.set(hx, 0, hz);
+                    hut.rotation.y = Math.atan2(-hx, -hz) + hrot;
+                    cityLandmarkGroup.add(hut);
+                    addBoxCollider(hx, hz, 4.2, 4.4, hut.rotation.y, 'christmas-market-hut');
+
+                    // Patch of trodden snow around each stall.
+                    const snowPatch = new THREE.Mesh(
+                        new THREE.CircleGeometry(3.2, 20),
+                        new THREE.MeshStandardMaterial({ color: 0xeef4f8, roughness: 0.85, transparent: true, opacity: 0.9 })
+                    );
+                    snowPatch.rotation.x = -Math.PI / 2;
+                    snowPatch.position.set(hx, 0.035, hz);
+                    cityLandmarkGroup.add(snowPatch);
+                });
+
+                // Strings of warm bulbs sagging between the stalls.
+                [[-15, -17], [-9, -18], [9, -18], [15, -17]].forEach(([sx, sz], si) => {
+                    if (si === 3) return;
+                    const next = marketHuts[si + 1];
+                    const pts = [];
+                    const steps = 18;
+                    for (let p = 0; p <= steps; p++) {
+                        const t = p / steps;
+                        const bx = sx + (next[0] - sx) * t;
+                        const bz = sz + (next[1] - sz) * t;
+                        const sag = Math.sin(Math.PI * t) * 0.55;
+                        pts.push(new THREE.Vector3(bx, 3.35 - sag, bz));
+                    }
+                    const lightGeo = new THREE.BufferGeometry().setFromPoints(pts);
+                    const cableLine = new THREE.Line(
+                        lightGeo,
+                        new THREE.LineBasicMaterial({ color: 0x3a2c1a, transparent: true, opacity: 0.55 })
+                    );
+                    cityLandmarkGroup.add(cableLine);
+                    const lightPoints = new THREE.Points(lightGeo, new THREE.PointsMaterial({
+                        color: 0xffd28a,
+                        size: 0.28,
+                        map: getGlowTexture(),
+                        transparent: true,
+                        opacity: 0.95,
+                        depthWrite: false,
+                        blending: THREE.AdditiveBlending,
+                        sizeAttenuation: true
+                    }));
+                    lightPoints.frustumCulled = false;
+                    cityLandmarkGroup.add(lightPoints);
+                });
             }
 
             // ------------------------------------------------------------------------
@@ -5311,7 +6254,58 @@
                     cityLandmarkGroup.add(flagPivot);
                     flagCloths.push({ mesh: flagPivot });
                 }
+
+                addCircleCollider(0, -33, 2.25, 'atomium-base');
+
+                // Manneken Pis as a readable bronze figure over a stone fountain basin.
+                const manneken = new THREE.Group();
+                const mannekenStone = new THREE.MeshStandardMaterial({ color: 0xa79d8a, roughness: 0.68 });
+                const mannekenDark = new THREE.MeshStandardMaterial({ color: 0x7a5332, metalness: 0.48, roughness: 0.44, emissive: 0x1c120a, emissiveIntensity: 0.18 });
+                const mnBasin = new THREE.Mesh(new THREE.CylinderGeometry(1.62, 1.72, 0.4, 18), mannekenStone);
+                mnBasin.position.y = 0.2;
+                mnBasin.receiveShadow = true;
+                manneken.add(mnBasin);
+                const mnWater = new THREE.Mesh(
+                    new THREE.CylinderGeometry(1.42, 1.42, 0.04, 18),
+                    new THREE.MeshStandardMaterial({ color: 0x6fc8e8, roughness: 0.12, metalness: 0.3 })
+                );
+                mnWater.position.y = 0.41;
+                manneken.add(mnWater);
+                const mnPlinth = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.62, 0.92), mannekenStone);
+                mnPlinth.position.set(0, 0.62, 0);
+                mnPlinth.castShadow = true;
+                manneken.add(mnPlinth);
+                const mnColumn = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.85, 0.66), mannekenStone);
+                mnColumn.position.set(0, 1.35, 0);
+                mnColumn.castShadow = true;
+                manneken.add(mnColumn);
+                const mnBody = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.34, 0.95, 10), mannekenDark);
+                mnBody.position.set(0, 2.16, 0.02);
+                mnBody.castShadow = true;
+                manneken.add(mnBody);
+                const mnHead = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), mannekenDark);
+                mnHead.position.set(0, 2.72, 0.02);
+                mnHead.castShadow = true;
+                manneken.add(mnHead);
+                const mnArm = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.48, 8), mannekenDark);
+                mnArm.position.set(0.28, 2.26, 0.14);
+                mnArm.rotation.z = 0.4;
+                manneken.add(mnArm);
+                const mnStream = new THREE.Mesh(
+                    new THREE.CylinderGeometry(0.035, 0.05, 0.8, 8),
+                    new THREE.MeshBasicMaterial({ color: 0xc7f0ff, transparent: true, opacity: 0.7 })
+                );
+                mnStream.position.set(0.33, 1.72, 0.3);
+                mnStream.rotation.z = -0.35;
+                manneken.add(mnStream);
+                manneken.position.set(17, 0, 4.5);
+                manneken.rotation.y = Math.PI;
+                manneken.scale.setScalar(1.5);
+                cityLandmarkGroup.add(manneken);
+                addBoxCollider(17, 4.5, 4.2, 3.4, Math.PI, 'manneken-pis');
             }
+
+            refreshColliderDebug();
         }
 
         function resize3DRenderer() {
@@ -5494,8 +6488,9 @@
                 const worldMoveZ = -nx * sinY + nz * cosY;
 
                 const speed = 0.26;
-                playerMesh.position.x = Math.max(-68, Math.min(68, playerMesh.position.x + worldMoveX * speed));
-                playerMesh.position.z = Math.max(-68, Math.min(68, playerMesh.position.z + worldMoveZ * speed));
+                movePlayerWithCollision(worldMoveX * speed, worldMoveZ * speed);
+                playerMesh.position.x = Math.max(-68, Math.min(68, playerMesh.position.x));
+                playerMesh.position.z = Math.max(-68, Math.min(68, playerMesh.position.z));
                 playerMesh.rotation.y = Math.atan2(worldMoveX, worldMoveZ);
             }
 
