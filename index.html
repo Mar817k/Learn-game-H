@@ -130,7 +130,7 @@
                 </div>
                 <div class="rounded-2xl bg-slate-900/80 border border-emerald-500/30 p-3.5">
                     <div class="text-xs font-black text-emerald-400 mb-1">🏛️ 2. 3D 實地蒐證與考證</div>
-                    <p class="text-[11px] text-slate-300 leading-relaxed">閱讀藍、金史料光柱，步入街區與建築內部集齊 3 份檔案並通過五題考證。</p>
+                    <p class="text-[11px] text-slate-300 leading-relaxed">閱讀藍、金史料光柱，依線索走入三個街區勘查；檔案箱顯現後集齊 3 份檔案並通過五題考證。</p>
                 </div>
                 <div class="rounded-2xl bg-slate-900/80 border border-rose-500/30 p-3.5">
                     <div class="text-xs font-black text-rose-400 mb-1">⚖️ 3. 多邊外交交叉盤問</div>
@@ -267,14 +267,14 @@
         <div id="threejs-container" class="w-full h-full"></div>
 
         <!-- Top-Left 3D City Status & 3-Step Investigation Tracker -->
-        <div class="fixed top-16 sm:top-20 left-3 sm:left-6 z-30 glass-panel rounded-2xl p-3.5 w-[270px] sm:w-80 pointer-events-auto">
+        <div class="fixed top-28 sm:top-20 left-3 sm:left-6 z-30 glass-panel rounded-2xl p-3.5 w-[270px] sm:w-80 pointer-events-auto">
             <div class="flex items-center justify-between mb-2">
                 <h3 id="city3d-title" class="text-sm sm:text-base font-black text-white">巴黎・舒曼廣場</h3>
                 <button onclick="returnToWorldMap()" class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold cursor-pointer">
-                    🛫 返回世界地圖
+                    🛫 返回地圖
                 </button>
             </div>
-            <p class="text-[11px] text-slate-300 mb-2.5">請依序調查廣場上的三色史料光柱以重組條約：</p>
+            <p class="text-[11px] text-slate-300 mb-2.5">先讀史料重組線索，再走入街區勘查現場；已勘查的檔案箱才會顯現。</p>
             
             <!-- 3-Step Investigation Checklist -->
             <div class="space-y-1.5 text-xs">
@@ -287,23 +287,23 @@
                     <span id="step-status-2" class="font-bold text-amber-400">待調查</span>
                 </div>
                 <div id="step-badge-3" class="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-emerald-200 opacity-60">
-                    <span>3. 🔍 城區與建築內實地蒐證</span>
-                    <span id="step-status-3" class="font-bold text-slate-400">🔒 需先閱畢兩份史料</span>
+                    <span>3. 🧭 勘查與蒐證</span>
+                    <span id="step-status-3" class="font-bold text-slate-400">🔒 先閱兩份史料</span>
                 </div>
                 <div id="step-badge-4" class="flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-purple-950/40 border border-purple-500/30 text-purple-300 opacity-60">
-                    <span>4. 🟣 史料考證測驗（五題驗證）</span>
+                    <span>4. 🟣 五題驗證</span>
                     <span id="step-status-4" class="font-bold text-slate-400">🔒 未解鎖</span>
                 </div>
             </div>
 
             <!-- Monument & Podium Hint -->
-            <div class="mt-2.5 pt-2 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-slate-400">
+            <div class="mt-2.5 pt-2 border-t border-slate-700/60 flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:justify-between text-[11px] text-slate-400">
                 <span>🏛️ 步入帶光門建築與街區尋證</span>
                 <span>⚖️ 中央外交談判台</span>
             </div>
             <!-- Spatial Clue & Evidence Radar -->
             <div id="city-clue-radar" class="mt-2 p-2.5 rounded-xl bg-emerald-950/60 border border-emerald-500/40 text-[11px] text-emerald-200 leading-relaxed">
-                🧭 <strong>現場探索指南：</strong>先閱讀藍、金兩座史料光柱，根據建築地標線索走入城市街區與歷史建築內部蒐證。
+                🧭 <strong>現場探索指南：</strong>先閱讀藍、金兩座史料光柱；再依線索走入三個街區勘查，勘查過的檔案箱才會顯現。
             </div>
             <!-- Camera Orbit Control Hint & Reset -->
             <div class="mt-2 pt-2 border-t border-slate-700/60 flex items-center justify-between text-[11px] text-cyan-300">
@@ -1924,6 +1924,7 @@
             CITIES_DATA.forEach(c => {
                 c.conquered = false;
                 c.stepsCompleted = [false, false, false];
+                c.exploredZones = [];
             });
             state.courtRecord = [];
             state.totalMistakes = 0;
@@ -2349,6 +2350,8 @@
         let scene, camera, renderer, playerMesh, podiumMesh, monumentMesh;
         let beacons = [];
         let scatteredEvidenceMeshes = [];
+        let explorationZones = [];
+        let lastRadarClock = -10;
         let cityLandmarkGroup = null;
         let dynamicCityProps = [];
         let threeInitialized = false;
@@ -3960,6 +3963,8 @@
             }
             dynamicCityProps = [];
             scatteredEvidenceMeshes = [];
+            explorationZones = [];
+            lastRadarClock = -10;
             resetCollisionWorld();
             // Central podium and memorial stone exist in every city.
             addCircleCollider(0, 0, 2.95, 'negotiation-podium');
@@ -3967,11 +3972,13 @@
 
             const cityObj = CITIES_DATA.find(c => c.id === cityId);
             if (cityObj) {
+                if (!Array.isArray(cityObj.exploredZones)) cityObj.exploredZones = [];
                 // Combine the primary treaty evidence AND all distracting/contextual city evidences
                 // so EVERY single piece of evidence is physically hidden inside the 3D city & enterable buildings!
                 const allCityEvidences = [cityObj.evidenceReward, ...(cityObj.scatteredEvidences || [])];
-                allCityEvidences.forEach(ev => {
+                allCityEvidences.forEach((ev, evIndex) => {
                     const evGroup = new THREE.Group();
+                    evGroup.visible = false;
 
                     // Subtle Ground Indicator Ring
                     const ring = new THREE.Mesh(
@@ -4002,9 +4009,22 @@
                     evGroup.add(ribbon);
 
                     evGroup.position.set(...ev.pos);
-                    evGroup.userData = { evidenceData: ev };
+                    evGroup.userData = { evidenceData: ev, zoneId: ev.id };
                     cityLandmarkGroup.add(evGroup);
                     scatteredEvidenceMeshes.push(evGroup);
+
+                    const district = getDistrictName(ev.origin);
+                    const zone = {
+                        id: ev.id,
+                        evidenceId: ev.id,
+                        x: ev.pos[0],
+                        z: ev.pos[2],
+                        r: ev.zoneRadius || (evIndex === 0 ? 8.5 : 7.2),
+                        district,
+                        clue: buildFieldClue(ev, district, evIndex),
+                        evidence: ev
+                    };
+                    explorationZones.push(zone);
                 });
             }
 
@@ -4554,6 +4574,11 @@
                         ev.pos = [34.0, 0, 22.5];
                         const mesh = scatteredEvidenceMeshes.find(m => m.userData.evidenceData.id === ev.id);
                         if (mesh) mesh.position.set(34.0, 0, 22.5);
+                        const zone = explorationZones.find(z => z.id === ev.id);
+                        if (zone) {
+                            zone.x = 34.0;
+                            zone.z = 22.5;
+                        }
                     }
                 });
             }
@@ -6582,7 +6607,7 @@
             document.getElementById('view-3d-city').classList.remove('hidden');
             document.getElementById('hud-mode-badge').textContent = '3D 實地考證';
             document.getElementById('hud-objective-text').textContent = `當前據點：${city.name} — 閱讀史料並走入街區建築蒐證`;
-            document.getElementById('city3d-title').textContent = `${city.name}・歷史現場`;
+            document.getElementById('city3d-title').textContent = `${city.name}・現場`;
 
             initThreeJS();
             buildRealisticCityEnvironment(city.id);
@@ -6608,6 +6633,114 @@
             renderWaypointList();
         }
 
+        function getDistrictName(origin) {
+            if (!origin) return '未知街區';
+            const afterCity = origin.split('・').slice(1).join('・');
+            return afterCity.replace(/（[^）]*）/g, '').replace(/\s+/g, ' ').trim() || origin;
+        }
+
+        function buildFieldClue(ev, district, index) {
+            const templates = [
+                `石板路上留下新鮮拖痕，牆角的半枚火漆封蠟仍帶餘溫，痕跡一路指向「${district}」。`,
+                `路燈下散落一張被撕角的借閱單，檔名與${ev.title}吻合，背面還畫著附近街廓的箭頭。`,
+                `側門銅牌被匆忙擦過，門縫夾著寫有「${district}」的封條碎片，顯示有人剛把檔案箱藏進室內。`
+            ];
+            return templates[index % templates.length];
+        }
+
+        function discoverExplorationZone(zone) {
+            const city = state.activeCity;
+            if (!city || !Array.isArray(explorationZones) || explorationZones.length === 0) return;
+            if (!Array.isArray(city.exploredZones)) city.exploredZones = [];
+            if (city.exploredZones.includes(zone.id)) return;
+            if (state.courtRecord.some(ev => ev.id === zone.evidenceId)) return;
+            city.exploredZones.push(zone.id);
+            playSFX('ping');
+            const recordsReady = city.stepsCompleted[0] && city.stepsCompleted[1];
+            showToast(
+                `🧭 城區勘查 ${city.exploredZones.length}/${explorationZones.length}：進入「${zone.district}」。${zone.clue}${recordsReady ? ' 檔案箱已顯現，靠近即可蒐證。' : ' 讀完藍、金史料後，檔案箱才會顯現。'}`,
+                6200
+            );
+            update3DChecklistUI();
+        }
+
+        function bearingLabel(dx, dz) {
+            const angle = Math.atan2(dx, -dz);
+            const normalized = (angle + Math.PI * 2) % (Math.PI * 2);
+            const dirs = ['北', '東北', '東', '東南', '南', '西南', '西', '西北'];
+            return dirs[Math.round(normalized / (Math.PI / 4)) % 8];
+        }
+
+        function updateExplorationRadar() {
+            const city = state.activeCity;
+            const radarEl = document.getElementById('city-clue-radar');
+            if (!city || !radarEl || !playerMesh) return;
+
+            const s1 = city.stepsCompleted[0];
+            const s2 = city.stepsCompleted[1];
+            const allEvs = [city.evidenceReward, ...(city.scatteredEvidences || [])];
+            const uncollectedEvs = allEvs.filter(ev => !state.courtRecord.some(r => r.id === ev.id));
+            const collectedCount = allEvs.length - uncollectedEvs.length;
+            const allEvCollected = uncollectedEvs.length === 0;
+            const explored = Array.isArray(city.exploredZones) ? city.exploredZones : [];
+            const allZonesExplored = explorationZones.length > 0 && explored.length >= explorationZones.length;
+
+            if (!s1 || !s2) {
+                radarEl.innerHTML = '🧭 <strong>現場探索指南：</strong>先閱讀廣場兩側的<strong>🔵藍色</strong>與<strong>🟡金色光柱</strong>；期間可先走入街區勘查，記錄現場痕跡。讀完史料後，已勘查街區的檔案箱才會顯現。';
+                return;
+            }
+
+            if (!allZonesExplored) {
+                const remaining = explorationZones.filter(zone => !explored.includes(zone.id));
+                let nearest = null;
+                let nearestDist = Infinity;
+                remaining.forEach(zone => {
+                    const dx = zone.x - playerMesh.position.x;
+                    const dz = zone.z - playerMesh.position.z;
+                    const dist = Math.hypot(dx, dz);
+                    if (dist < nearestDist) {
+                        nearestDist = dist;
+                        nearest = { zone, dx, dz, dist };
+                    }
+                });
+                if (!nearest) return;
+                radarEl.innerHTML = `
+                    <div class="font-bold text-amber-300 mb-1">🧭 勘查 ${explored.length}/${explorationZones.length}・📥 蒐證 ${collectedCount}/${allEvs.length} — 尚餘 ${remaining.length} 區</div>
+                    <div class="font-bold text-emerald-100">最近線索：${nearest.zone.district} · ${bearingLabel(nearest.dx, nearest.dz)}方約 ${Math.round(nearest.dist)} 公尺</div>
+                    <div class="text-[10px] text-emerald-200/90 mt-1">${nearest.zone.clue}</div>
+                `;
+                return;
+            }
+
+            if (!allEvCollected) {
+                let nearestEvidence = null;
+                uncollectedEvs.forEach(ev => {
+                    const mesh = scatteredEvidenceMeshes.find(m => m.userData.evidenceData.id === ev.id);
+                    if (!mesh) return;
+                    const dx = mesh.position.x - playerMesh.position.x;
+                    const dz = mesh.position.z - playerMesh.position.z;
+                    const dist = Math.hypot(dx, dz);
+                    if (!nearestEvidence || dist < nearestEvidence.dist) {
+                        nearestEvidence = { ev, dx, dz, dist };
+                    }
+                });
+                const locationsHtml = uncollectedEvs.map(ev => `<li class="truncate">• ${ev.origin}</li>`).join('');
+                radarEl.innerHTML = `
+                    <div class="font-bold text-amber-300 mb-1">📥 勘查 ${explorationZones.length}/${explorationZones.length}・蒐證 ${collectedCount}/${allEvs.length}，尚餘 ${uncollectedEvs.length} 份檔案待領取：</div>
+                    ${nearestEvidence ? `<div class="font-bold text-emerald-100">最近檔案：${nearestEvidence.ev.origin} · ${bearingLabel(nearestEvidence.dx, nearestEvidence.dz)}方約 ${Math.round(nearestEvidence.dist)} 公尺</div>` : ''}
+                    <ul class="space-y-0.5 text-[10px] text-emerald-100">${locationsHtml}</ul>
+                    <div class="text-[10px] text-emerald-200/80 mt-1">檔案箱已在原址顯現，走近按「拾取並收入證物袋」。</div>
+                `;
+                return;
+            }
+
+            if (!city.stepsCompleted[2]) {
+                radarEl.innerHTML = '🟣 <strong>全城證據已集齊！</strong>請前往廣場北側的<strong>【紫色封印光柱】</strong>完成 5 題史料綜合考證。';
+            } else {
+                radarEl.innerHTML = '⚖️ <strong>考證全部完成！</strong>請走上廣場中央的<strong>【外交談判台】</strong>展開多邊外交交叉盤問！';
+            }
+        }
+
         function update3DChecklistUI() {
             const city = state.activeCity;
             if (!city) return;
@@ -6620,6 +6753,9 @@
             const uncollectedEvs = allEvs.filter(ev => !state.courtRecord.some(r => r.id === ev.id));
             const collectedCount = allEvs.length - uncollectedEvs.length;
             const allEvCollected = uncollectedEvs.length === 0;
+            const explored = Array.isArray(city.exploredZones) ? city.exploredZones : [];
+            const exploredCount = explorationZones.length > 0 ? Math.min(explored.length, explorationZones.length) : 0;
+            const allZonesExplored = explorationZones.length > 0 && exploredCount >= explorationZones.length;
 
             // Step 1 Badge
             document.getElementById('step-status-1').textContent = s1 ? '✅ 已閱讀' : '待調查';
@@ -6629,16 +6765,24 @@
             document.getElementById('step-status-2').textContent = s2 ? '✅ 已閱讀' : '待調查';
             document.getElementById('step-status-2').className = s2 ? 'font-bold text-emerald-400' : 'font-bold text-amber-400';
 
-            // Step 3 Badge (City & Building Evidence Search)
+            // Step 3 Badge (City survey -> physical evidence collection)
             const badge3 = document.getElementById('step-badge-3');
             const status3 = document.getElementById('step-status-3');
             if (s1 && s2) {
                 badge3.classList.remove('opacity-60');
-                status3.textContent = allEvCollected ? `✅ 已集齊 (${collectedCount}/${allEvs.length})` : `🔍 尋證中 (${collectedCount}/${allEvs.length})`;
-                status3.className = allEvCollected ? 'font-bold text-emerald-400' : 'font-bold text-emerald-300';
+                if (!allZonesExplored) {
+                    status3.textContent = `🧭${exploredCount}/${explorationZones.length}・📥${collectedCount}/${allEvs.length}`;
+                    status3.className = 'font-bold text-amber-300';
+                } else if (!allEvCollected) {
+                    status3.textContent = `📥 蒐證中 (${collectedCount}/${allEvs.length})`;
+                    status3.className = 'font-bold text-emerald-300';
+                } else {
+                    status3.textContent = `✅ 已集齊 (${collectedCount}/${allEvs.length})`;
+                    status3.className = 'font-bold text-emerald-400';
+                }
             } else {
                 badge3.classList.add('opacity-60');
-                status3.textContent = allEvCollected ? `✅ 已集齊 (${collectedCount}/${allEvs.length})` : `🔒 需先閱畢兩份史料 (${collectedCount}/${allEvs.length})`;
+                status3.textContent = allEvCollected ? `✅ 已集齊 (${collectedCount}/${allEvs.length})` : '🔒 先閱兩份史料';
                 status3.className = 'font-bold text-slate-400';
             }
 
@@ -6655,21 +6799,14 @@
                 status4.className = 'font-bold text-slate-400';
             }
 
-            // Update Spatial Clue & Evidence Radar
-            const radarEl = document.getElementById('city-clue-radar');
-            if (!s1 || !s2) {
-                radarEl.innerHTML = '🧭 <strong>現場探索指南：</strong>請先走近廣場兩側的<strong>🔵藍色</strong>與<strong>🟡金色光柱</strong>閱讀歷史資料，文中將揭示三份史料檔案在城內的具體建築藏處！';
-            } else if (!allEvCollected) {
-                const locationsHtml = uncollectedEvs.map(ev => `<li class="truncate">• ${ev.origin}</li>`).join('');
-                radarEl.innerHTML = `
-                    <div class="font-bold text-amber-300 mb-1">🔍 尚餘 ${uncollectedEvs.length} 份史料待搜尋（請走入帶金色門框的建築內部或街角）：</div>
-                    <ul class="space-y-0.5 text-[10px] text-emerald-100">${locationsHtml}</ul>
-                `;
-            } else if (!s3) {
-                radarEl.innerHTML = '🟣 <strong>全城證據已集齊！</strong>請前往廣場北側的<strong>【紫色封印光柱】</strong>完成 5 題史料綜合考證。';
-            } else {
-                radarEl.innerHTML = '⚖️ <strong>考證全部完成！</strong>請走上廣場中央的<strong>【外交談判台】</strong>展開多邊外交交叉盤問！';
+            // Keep the top objective bar aware of the survey -> evidence chain.
+            const objectiveEl = document.getElementById('hud-objective-text');
+            if (objectiveEl) {
+                objectiveEl.textContent = `當前據點：${city.name} — 城區勘查 ${exploredCount}/${explorationZones.length}・蒐證 ${collectedCount}/${allEvs.length}`;
             }
+
+            // Update Spatial Clue & Evidence Radar (live bearing is refreshed in the loop)
+            updateExplorationRadar();
         }
 
         // 3D Scene Update, Free Camera Orbit & Proximity Detection Loop
@@ -6765,11 +6902,31 @@
             });
             podiumMesh.children[3].rotation.y -= 0.02;
 
+            // Survey zones: entering a district records a field clue and reveals
+            // the hidden dossier once the two narrative pillars have been read.
+            const cityForSurvey = state.activeCity;
+            if (cityForSurvey) {
+                if (!Array.isArray(cityForSurvey.exploredZones)) cityForSurvey.exploredZones = [];
+                explorationZones.forEach(zone => {
+                    if (cityForSurvey.exploredZones.includes(zone.id)) return;
+                    const surveyDist = Math.hypot(
+                        playerMesh.position.x - zone.x,
+                        playerMesh.position.z - zone.z
+                    );
+                    if (surveyDist <= zone.r) discoverExplorationZone(zone);
+                });
+            }
+
+            const recordsReadyForEvidence = cityForSurvey &&
+                cityForSurvey.stepsCompleted[0] && cityForSurvey.stepsCompleted[1];
+
             scatteredEvidenceMeshes.forEach((evMesh, idx) => {
                 const evData = evMesh.userData.evidenceData;
                 const alreadyCollected = state.courtRecord.some(item => item.id === evData.id);
-                evMesh.visible = !alreadyCollected;
-                if (!alreadyCollected) {
+                const zoneSurveyed = cityForSurvey && Array.isArray(cityForSurvey.exploredZones) &&
+                    cityForSurvey.exploredZones.includes(evData.id);
+                evMesh.visible = !alreadyCollected && zoneSurveyed && recordsReadyForEvidence;
+                if (evMesh.visible) {
                     evMesh.children[1].rotation.y += 0.025;
                     evMesh.children[1].position.y = 1.15 + Math.sin(clock3D * 1.4 + idx) * 0.16;
                     evMesh.children[2].rotation.y += 0.025;
@@ -6840,6 +6997,13 @@
                 promptEl.classList.add('hidden');
             }
 
+            if (clock3D - lastRadarClock > 0.6) {
+                lastRadarClock = clock3D;
+                if (cityForSurvey && cityForSurvey.stepsCompleted[0] && cityForSurvey.stepsCompleted[1]) {
+                    updateExplorationRadar();
+                }
+            }
+
             renderer.render(scene, camera);
         }
 
@@ -6861,7 +7025,15 @@
 
             if (item.type === 'scattered_evidence') {
                 const ev = item.evidenceData;
+                const city = state.activeCity;
+                if (!city.stepsCompleted[0] || !city.stepsCompleted[1]) {
+                    playSFX('damage');
+                    showToast('🔒 檔案箱尚未顯現！請先閱讀廣場上的【藍色光柱】與【金色光柱】，再回到已勘查的街區蒐證。', 4200);
+                    return;
+                }
                 if (!state.courtRecord.some(r => r.id === ev.id)) {
+                    const zone = explorationZones.find(z => z.id === ev.id);
+                    if (zone) ev.fieldNote = zone.clue;
                     state.courtRecord.push(ev);
                     document.getElementById('hud-evidence-count').textContent = state.courtRecord.length;
                     playSFX('collect');
@@ -6871,9 +7043,9 @@
                     const collectedCount = allEvs.filter(e => state.courtRecord.some(r => r.id === e.id)).length;
 
                     if (collectedCount === allEvs.length && state.activeCity.stepsCompleted[0] && state.activeCity.stepsCompleted[1]) {
-                        showToast(`📥 已收入《${ev.title}》！全城證據（${collectedCount}/${allEvs.length}）與兩份史料皆已齊全，【紫色封印光柱】五題考證已解鎖！`, 5000);
+                        showToast(`📥 在「${zone ? zone.district : ev.origin}」勘查點帶回《${ev.title}》！全城證據（${collectedCount}/${allEvs.length}）與兩份史料皆已齊全，【紫色封印光柱】五題考證已解鎖！`, 5000);
                     } else {
-                        showToast(`📥 已在「${ev.origin}」尋獲並收入《${ev.title}》！（本城進度：${collectedCount}/${allEvs.length} 份）`, 4200);
+                        showToast(`📥 在「${zone ? zone.district : ev.origin}」勘查點帶回《${ev.title}》！（本城進度：${collectedCount}/${allEvs.length} 份）`, 4200);
                     }
                 }
                 return;
@@ -6897,7 +7069,7 @@
                 }
                 if (!allEvCollected) {
                     playSFX('damage');
-                    showToast('⚠️ 證據未集齊！請深入城市街道角落與建築物內部，找齊本城全部 3 份證據！', 4200);
+                    showToast('⚠️ 證據未集齊！請依雷達完成三處街區勘查，讓檔案箱顯現並找齊本城全部 3 份證據！', 4200);
                     return;
                 }
                 if (!city.stepsCompleted[2]) {
@@ -6923,7 +7095,7 @@
                 }
                 if (!allEvCollected) {
                     playSFX('damage');
-                    showToast(`🔒 尚有城中證據未尋獲（目前 ${collectedCount}/${allEvs.length} 份）！請走入城市街道角落與建築物內部集齊所有證據后再來答題！`, 4500);
+                    showToast(`🔒 尚有城中證據未尋獲（目前 ${collectedCount}/${allEvs.length} 份）！請先依雷達完成三處街區勘查，讓檔案箱顯現並集齊所有證據后再來答題！`, 4500);
                     return;
                 }
             }
@@ -7041,7 +7213,7 @@
                         if (allEvCollected) {
                             showToast('🔓 兩份歷史資料與全城證據皆已齊備！【紫色封印光柱】考證測驗已正式解鎖！', 4000);
                         } else {
-                            showToast('🔍 兩份歷史資料已閱畢！請走入城市街道角落與建築物內部，集齊所有證據后再進行紫色光柱考證！', 4500);
+                            showToast('🔍 兩份歷史資料已閱畢！請依雷達線索走入三個街區勘查；檔案箱顯現後再逐份蒐證，最後進行紫色光柱考證！', 4800);
                         }
                     }
                 }
@@ -7111,6 +7283,7 @@
                             <h4 class="text-sm sm:text-base font-black text-white">${ev.title}</h4>
                         </div>
                         <p class="text-xs text-slate-300 leading-relaxed">${ev.summary}</p>
+                        ${ev.fieldNote ? `<div class="text-[11px] text-emerald-300 leading-relaxed">🧭 現場勘查：${ev.fieldNote}</div>` : ''}
                         <div class="text-[11px] text-cyan-400 font-bold">DSE 考點關鍵詞：${ev.keyPoints}</div>
                     </div>
                     ${state.court.presentingMode ? `
@@ -7337,6 +7510,7 @@
             CITIES_DATA.forEach(c => {
                 c.conquered = false;
                 c.stepsCompleted = [false, false, false];
+                c.exploredZones = [];
             });
             state.courtRecord = [];
             state.totalMistakes = 0;
