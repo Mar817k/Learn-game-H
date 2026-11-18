@@ -2390,19 +2390,19 @@
          *  - Procedural meshes stay as instant fallbacks; detailed clones replace
          *    only after their PBR asset has decoded successfully
          * ====================================================================== */
-        const HD_CDN_BASE = 'https://raw.githubusercontent.com/Mar817k/Learn-game-H/23ec2f6/';
+        const HD_CDN_BASE = 'https://cdn.jsdelivr.net/gh/Mar817k/Learn-game-H@main/';
         const HD_MODEL_URLS = {
             eiffel: {
                 cdn: HD_CDN_BASE + 'assets/models/eiffel/eiffel-tower-1k.glb',
                 local: 'assets/models/eiffel/eiffel-tower-1k.glb'
             },
             bench: {
-                cdn: HD_CDN_BASE + 'assets/models/bench/painted_wooden_bench_1k.gltf',
-                local: 'assets/models/bench/painted_wooden_bench_1k.gltf'
+                cdn: HD_CDN_BASE + 'assets/models/bench/painted_wooden_bench.glb',
+                local: 'assets/models/bench/painted_wooden_bench.glb'
             },
             lamp: {
-                cdn: HD_CDN_BASE + 'assets/models/lamp_post/street_lamp_01_1k.gltf',
-                local: 'assets/models/lamp_post/street_lamp_01_1k.gltf'
+                cdn: HD_CDN_BASE + 'assets/models/lamp_post/street_lamp_01.glb',
+                local: 'assets/models/lamp_post/street_lamp_01.glb'
             }
         };
         const hdModelCache = {};
@@ -2979,23 +2979,15 @@
             if (stonePbrStarted) return;
             stonePbrStarted = true;
             const loader = new THREE.TextureLoader();
+            // Paving maps are kept same-origin and small (512 px): they load
+            // reliably from the Pages origin while the 3D models stream from CDN.
             const files = {
-                diffuse: {
-                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg',
-                    local: 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg'
-                },
-                normal: {
-                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg',
-                    local: 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg'
-                },
-                rough: {
-                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg',
-                    local: 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg'
-                }
+                diffuse: 'assets/textures/stone_pavers/stone_pavers_diff_512.jpg',
+                normal: 'assets/textures/stone_pavers/stone_pavers_nor_512.jpg',
+                rough: 'assets/textures/stone_pavers/stone_pavers_rough_512.jpg'
             };
             Object.keys(files).forEach(key => {
-                const entry = files[key];
-                const handleTexture = tex => {
+                loader.load(files[key], tex => {
                     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
                     tex.repeat.set(7, 7);
                     tex.encoding = key === 'diffuse' ? THREE.sRGBEncoding : THREE.LinearEncoding;
@@ -3004,17 +2996,7 @@
                     if (stonePbr.diffuse && stonePbr.normal && stonePbr.rough && currentPlazaMaterial) {
                         applyStonePbr(currentPlazaMaterial);
                     }
-                };
-                const attempt = url => {
-                    loader.load(url, handleTexture, undefined, () => {
-                        if (url !== entry.local) {
-                            attempt(entry.local);
-                            return;
-                        }
-                        console.warn('Paving texture failed to load:', key);
-                    });
-                };
-                attempt(entry.cdn);
+                }, undefined, () => console.warn('Paving texture failed to load:', key));
             });
         }
 
