@@ -97,6 +97,8 @@
         #joystick-zone {
             touch-action: none;
         }
+        #city3d-status-panel.collapsed > :not(:first-child) { display: none; }
+        #city3d-status-panel.collapsed { width: max-content !important; max-width: calc(100vw - 24px); }
     </style>
 </head>
 <body class="relative w-full h-full overflow-hidden">
@@ -267,12 +269,15 @@
         <div id="threejs-container" class="w-full h-full"></div>
 
         <!-- Top-Left 3D City Status & 3-Step Investigation Tracker -->
-        <div class="fixed top-28 sm:top-20 left-3 sm:left-6 z-30 glass-panel rounded-2xl p-3.5 w-[270px] sm:w-80 pointer-events-auto">
+        <div id="city3d-status-panel" class="fixed top-28 sm:top-20 left-3 sm:left-6 z-30 glass-panel rounded-2xl p-3.5 w-[270px] sm:w-80 pointer-events-auto">
             <div class="flex items-center justify-between mb-2">
                 <h3 id="city3d-title" class="text-sm sm:text-base font-black text-white">巴黎・舒曼廣場</h3>
-                <button onclick="returnToWorldMap()" class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold cursor-pointer">
-                    🛫 返回地圖
-                </button>
+                <div class="flex items-center gap-1">
+                    <button id="btn-toggle-3d-guide" onclick="toggle3DGuide()" title="收合任務面板" aria-label="收合任務面板" class="w-7 h-7 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-black cursor-pointer">▾</button>
+                    <button onclick="returnToWorldMap()" class="text-[11px] px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/30 font-bold cursor-pointer">
+                        🛫 返回地圖
+                    </button>
+                </div>
             </div>
             <p class="text-[11px] text-slate-300 mb-2.5">先讀史料重組線索，再走入街區勘查現場；已勘查的檔案箱才會顯現。</p>
             
@@ -2344,7 +2349,7 @@
 
         /**
          * ============================================================================
-         * 2. THREE.JS 3D REALISTIC CITY ENVIRONMENT & DIPLOMAT CHESS AVATAR
+         * 2. THREE.JS 3D REALISTIC CITY ENVIRONMENT & DIPLOMAT AVATAR
          * ============================================================================
          */
         let scene, camera, renderer, playerMesh, podiumMesh, monumentMesh;
@@ -2352,6 +2357,7 @@
         let scatteredEvidenceMeshes = [];
         let explorationZones = [];
         let lastRadarClock = -10;
+        let playerWalkPhase = 0;
         let cityLandmarkGroup = null;
         let dynamicCityProps = [];
         let threeInitialized = false;
@@ -3382,88 +3388,246 @@
                 beacons.push(group);
             });
 
-            // 3D Player Character: Bespoke Diplomat Chess Piece (無頭飾外交官員西洋棋造型)
+            // 3D Player Character: Stylized human diplomat with a tailored suit,
+            // readable face, walking rig and a proper leather briefcase.
             const playerGroup = new THREE.Group();
 
-            // 1. Lathe-Turned Classical Chess Body Profile
-            const chessProfile = [
-                new THREE.Vector2(0.0, 0.0),
-                new THREE.Vector2(0.76, 0.0),
-                new THREE.Vector2(0.78, 0.14),
-                new THREE.Vector2(0.64, 0.28),
-                new THREE.Vector2(0.68, 0.38),
-                new THREE.Vector2(0.52, 0.55),
-                new THREE.Vector2(0.32, 1.45),
-                new THREE.Vector2(0.48, 1.60),
-                new THREE.Vector2(0.28, 1.72),
-                new THREE.Vector2(0.24, 1.88),
-                new THREE.Vector2(0.0, 1.88)
+            const suitMat = new THREE.MeshStandardMaterial({ color: 0x16243a, roughness: 0.62, metalness: 0.06 });
+            const suitDeepMat = new THREE.MeshStandardMaterial({ color: 0x0e1826, roughness: 0.7, metalness: 0.04 });
+            const lapelMat = new THREE.MeshStandardMaterial({ color: 0x22344e, roughness: 0.48, metalness: 0.08 });
+            const shirtMat = new THREE.MeshStandardMaterial({ color: 0xf5f2e9, roughness: 0.56, side: THREE.DoubleSide });
+            const tieMat = new THREE.MeshStandardMaterial({ color: 0x7f1d1d, roughness: 0.44 });
+            const skinMat = new THREE.MeshStandardMaterial({ color: 0xe0b08a, roughness: 0.54, emissive: 0x32180d, emissiveIntensity: 0.18 });
+            const skinWarmMat = new THREE.MeshStandardMaterial({ color: 0xc98f68, roughness: 0.54, emissive: 0x180b06, emissiveIntensity: 0.08 });
+            const hairMat = new THREE.MeshStandardMaterial({ color: 0x241b16, roughness: 0.62 });
+            const shoeMat = new THREE.MeshStandardMaterial({ color: 0x171210, roughness: 0.32, metalness: 0.12 });
+            const goldMat = new THREE.MeshStandardMaterial({ color: 0xd4a64a, metalness: 0.78, roughness: 0.26 });
+            const glassFrameMat = new THREE.MeshStandardMaterial({ color: 0xb9923e, metalness: 0.72, roughness: 0.3 });
+            const lensMat = new THREE.MeshStandardMaterial({ color: 0xd8ecff, transparent: true, opacity: 0.16, roughness: 0.18, metalness: 0.15, side: THREE.DoubleSide, depthWrite: false });
+            const badgeMat = new THREE.MeshStandardMaterial({ color: 0x2563eb, roughness: 0.45 });
+            const paperMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.6 });
+
+            const addPart = (parent, geometry, material, x = 0, y = 0, z = 0, cast = true) => {
+                const mesh = new THREE.Mesh(geometry, material);
+                mesh.position.set(x, y, z);
+                mesh.castShadow = cast;
+                mesh.receiveShadow = false;
+                parent.add(mesh);
+                return mesh;
+            };
+
+            // A soft contact shadow keeps the shoes from reading as if they float.
+            const contactShadow = addPart(
+                playerGroup,
+                new THREE.CircleGeometry(0.38, 24),
+                new THREE.MeshBasicMaterial({ color: 0x020617, transparent: true, opacity: 0.2, depthWrite: false }),
+                0, 0.018, 0, false
+            );
+            contactShadow.rotation.x = -Math.PI / 2;
+
+            const body = new THREE.Group();
+            playerGroup.add(body);
+
+            // Tailored jacket torso: tapered waist, broader chest, shallow depth.
+            const torsoProfile = [
+                new THREE.Vector2(0.19, 0.0),
+                new THREE.Vector2(0.215, 0.12),
+                new THREE.Vector2(0.20, 0.27),
+                new THREE.Vector2(0.27, 0.42),
+                new THREE.Vector2(0.30, 0.52),
+                new THREE.Vector2(0.235, 0.61),
+                new THREE.Vector2(0.0, 0.61)
             ];
-            const chessBodyGeo = new THREE.LatheGeometry(chessProfile, 32);
-            const navySuitMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.35, metalness: 0.25 });
-            const chessBody = new THREE.Mesh(chessBodyGeo, navySuitMat);
-            chessBody.castShadow = true;
-            playerGroup.add(chessBody);
+            const torso = addPart(body, new THREE.LatheGeometry(torsoProfile, 24), suitMat, 0, 0.92, 0);
+            torso.scale.z = 0.80;
+            addPart(body, new THREE.BoxGeometry(0.012, 0.49, 0.008), suitDeepMat, 0, 1.28, -0.230);
+            addPart(body, new THREE.BoxGeometry(0.34, 0.012, 0.008), suitDeepMat, 0, 1.40, -0.228);
 
-            // 2. Gold Base Trim Ring
-            const baseGoldRing = new THREE.Mesh(
-                new THREE.TorusGeometry(0.66, 0.04, 12, 32),
-                new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.85, roughness: 0.2 })
-            );
-            baseGoldRing.rotation.x = Math.PI / 2;
-            baseGoldRing.position.y = 0.34;
-            playerGroup.add(baseGoldRing);
+            // Jacket hem and shoulder caps round out the silhouette.
+            const pelvis = addPart(body, new THREE.CylinderGeometry(0.205, 0.185, 0.16, 18), suitMat, 0, 0.88, 0);
+            pelvis.scale.z = 0.78;
+            const belt = addPart(body, new THREE.CylinderGeometry(0.207, 0.202, 0.052, 20), suitDeepMat, 0, 0.935, 0);
+            belt.scale.z = 0.80;
+            addPart(body, new THREE.BoxGeometry(0.052, 0.040, 0.016), goldMat, 0, 0.935, 0.171);
+            const leftShoulder = addPart(body, new THREE.SphereGeometry(0.090, 16, 12), suitMat, -0.245, 1.45, 0);
+            leftShoulder.scale.set(1.0, 0.50, 0.78);
+            const rightShoulder = addPart(body, new THREE.SphereGeometry(0.090, 16, 12), suitMat, 0.245, 1.45, 0);
+            rightShoulder.scale.set(1.0, 0.50, 0.78);
 
-            // 3. White Dress Shirt V-Front & Red Silk Diplomatic Tie
-            const shirtV = new THREE.Mesh(
-                new THREE.ConeGeometry(0.22, 0.65, 3),
-                new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.4 })
-            );
-            shirtV.rotation.x = Math.PI;
-            shirtV.position.set(0, 1.38, 0.33);
-            playerGroup.add(shirtV);
+            // White shirt wedge, pointed collar, lapels and silk tie.
+            const shirtShape = new THREE.Shape();
+            shirtShape.moveTo(-0.095, 0.0);
+            shirtShape.lineTo(0.095, 0.0);
+            shirtShape.lineTo(0.0, -0.17);
+            const shirtFront = addPart(body, new THREE.ShapeGeometry(shirtShape), shirtMat, 0, 1.47, 0.232);
+            const collar = addPart(body, new THREE.CylinderGeometry(0.165, 0.18, 0.062, 18, 1, true), shirtMat, 0, 1.49, 0);
+            collar.scale.z = 0.9;
+            const shirtPlacket = addPart(body, new THREE.BoxGeometry(0.085, 0.245, 0.012), shirtMat, 0, 1.355, 0.245);
 
-            const redTie = new THREE.Mesh(
-                new THREE.BoxGeometry(0.08, 0.55, 0.06),
-                new THREE.MeshStandardMaterial({ color: 0xdc2626, roughness: 0.3 })
-            );
-            redTie.position.set(0, 1.32, 0.37);
-            playerGroup.add(redTie);
+            const leftLapel = addPart(body, new THREE.BoxGeometry(0.115, 0.30, 0.026), lapelMat, -0.102, 1.325, 0.238);
+            leftLapel.rotation.z = -0.22;
+            const rightLapel = addPart(body, new THREE.BoxGeometry(0.115, 0.30, 0.026), lapelMat, 0.102, 1.325, 0.238);
+            rightLapel.rotation.z = 0.22;
+            const leftCollarBand = addPart(body, new THREE.BoxGeometry(0.13, 0.052, 0.03), lapelMat, -0.098, 1.49, 0.215);
+            leftCollarBand.rotation.z = -0.42;
+            const rightCollarBand = addPart(body, new THREE.BoxGeometry(0.13, 0.052, 0.03), lapelMat, 0.098, 1.49, 0.215);
+            rightCollarBand.rotation.z = 0.42;
 
-            // 4. Golden Diplomatic Lapel Emblem
-            const lapelPin = new THREE.Mesh(
-                new THREE.SphereGeometry(0.045, 10, 10),
-                new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.9, roughness: 0.15 })
-            );
-            lapelPin.position.set(-0.18, 1.42, 0.34);
-            playerGroup.add(lapelPin);
+            const tieGroup = new THREE.Group();
+            tieGroup.position.set(0, 1.44, 0.252);
+            tieGroup.rotation.x = 0.15;
+            body.add(tieGroup);
+            addPart(tieGroup, new THREE.BoxGeometry(0.062, 0.052, 0.034), tieMat, 0, -0.012, 0);
+            const tieBlade = addPart(tieGroup, new THREE.CylinderGeometry(0.023, 0.052, 0.27, 4), tieMat, 0, -0.17, 0);
+            tieBlade.rotation.y = Math.PI / 4;
+            addPart(tieGroup, new THREE.BoxGeometry(0.042, 0.012, 0.012), goldMat, 0, -0.11, 0.025);
 
-            // 5. Clean Ivory Chess Sphere Head (No Headwear)
-            const head = new THREE.Mesh(
-                new THREE.SphereGeometry(0.36, 28, 28),
-                new THREE.MeshStandardMaterial({ color: 0xfef3c7, roughness: 0.3 })
-            );
-            head.position.y = 2.15;
-            head.castShadow = true;
-            playerGroup.add(head);
+            // Chest details: pocket square, buttons, lapel pin and a diplomatic ID badge.
+            const pocketSquare = addPart(body, new THREE.PlaneGeometry(0.052, 0.035), paperMat, -0.17, 1.325, 0.245);
+            pocketSquare.rotation.z = 0.22;
+            [-0.03, -0.12].forEach((offset, i) => {
+                addPart(body, new THREE.SphereGeometry(0.017, 8, 8), goldMat, 0.008 + (i === 0 ? 0.045 : 0), 1.30 + offset, 0.246);
+            });
+            addPart(body, new THREE.SphereGeometry(0.025, 10, 10), goldMat, -0.17, 1.405, 0.248);
 
-            // 6. Leather Diplomatic Briefcase carried on right side
-            const briefcaseGroup = new THREE.Group();
-            const caseBody = new THREE.Mesh(
-                new THREE.BoxGeometry(0.16, 0.44, 0.60),
-                new THREE.MeshStandardMaterial({ color: 0x78350f, roughness: 0.4 })
-            );
-            briefcaseGroup.add(caseBody);
-            const caseClasp = new THREE.Mesh(
-                new THREE.BoxGeometry(0.18, 0.08, 0.12),
-                new THREE.MeshStandardMaterial({ color: 0xfbbf24, metalness: 0.85 })
-            );
-            caseClasp.position.y = 0.08;
-            briefcaseGroup.add(caseClasp);
-            briefcaseGroup.position.set(0.62, 0.65, 0.12);
-            playerGroup.add(briefcaseGroup);
+            const badgeGroup = new THREE.Group();
+            badgeGroup.position.set(0.145, 1.245, 0.24);
+            body.add(badgeGroup);
+            const lanyard = addPart(body, new THREE.BoxGeometry(0.012, 0.27, 0.012), badgeMat, 0.145, 1.36, 0.232);
+            lanyard.rotation.z = 0.16;
+            addPart(badgeGroup, new THREE.BoxGeometry(0.078, 0.105, 0.010), paperMat, 0, 0, 0);
+            addPart(badgeGroup, new THREE.BoxGeometry(0.078, 0.023, 0.012), badgeMat, 0, 0.041, 0.002);
+            addPart(badgeGroup, new THREE.BoxGeometry(0.046, 0.007, 0.012), suitDeepMat, 0, -0.014, 0.002);
 
+            // Neck and head.
+            addPart(body, new THREE.CylinderGeometry(0.073, 0.085, 0.13, 14), skinMat, 0, 1.53, 0);
+            const headGroup = new THREE.Group();
+            headGroup.position.set(0, 1.77, 0);
+            headGroup.scale.set(0.74, 0.86, 0.78);
+            body.add(headGroup);
+            const head = addPart(headGroup, new THREE.SphereGeometry(0.205, 28, 22), skinMat, 0, 0, 0);
+            head.scale.set(0.94, 1.10, 0.98);
+
+            // Ears, hair cap and a short back-of-head hair mass.
+            const leftEar = addPart(headGroup, new THREE.SphereGeometry(0.041, 12, 10), skinWarmMat, -0.184, -0.005, 0.005);
+            leftEar.scale.set(0.40, 0.94, 0.60);
+            const rightEar = addPart(headGroup, new THREE.SphereGeometry(0.041, 12, 10), skinWarmMat, 0.184, -0.005, 0.005);
+            rightEar.scale.set(0.40, 0.94, 0.60);
+            const hairCap = addPart(headGroup, new THREE.SphereGeometry(0.208, 24, 18, 0, Math.PI * 2, 0, 1.12), hairMat, 0, 0.012, -0.003);
+            hairCap.scale.set(0.97, 1.03, 1.0);
+            const backHair = addPart(headGroup, new THREE.SphereGeometry(0.205, 24, 18, Math.PI, Math.PI, 0.92, 1.55), hairMat, 0, 0.005, -0.006);
+            backHair.scale.set(0.96, 1.02, 0.99);
+            const leftSideburn = addPart(headGroup, new THREE.BoxGeometry(0.026, 0.088, 0.024), hairMat, -0.166, -0.035, 0.045);
+            leftSideburn.rotation.z = -0.08;
+            const rightSideburn = addPart(headGroup, new THREE.BoxGeometry(0.026, 0.088, 0.024), hairMat, 0.166, -0.035, 0.045);
+            rightSideburn.rotation.z = 0.08;
+
+            // Face: almond eye whites, brown irises, brows, nose, mouth and gold spectacles.
+            [-1, 1].forEach(side => {
+                const ex = side * 0.060;
+                const eyeWhite = addPart(headGroup, new THREE.SphereGeometry(0.029, 14, 10), paperMat, ex, 0.018, 0.185);
+                eyeWhite.scale.set(1.0, 0.52, 0.50);
+                const iris = addPart(headGroup, new THREE.SphereGeometry(0.0105, 12, 10), new THREE.MeshStandardMaterial({ color: 0x4b2d1f, roughness: 0.42 }), ex, 0.018, 0.203);
+                iris.scale.z = 0.55;
+                addPart(headGroup, new THREE.SphereGeometry(0.005, 8, 8), new THREE.MeshBasicMaterial({ color: 0x100c0a }), ex, 0.018, 0.211, false);
+                addPart(headGroup, new THREE.SphereGeometry(0.0026, 6, 6), new THREE.MeshBasicMaterial({ color: 0xffffff }), ex - 0.004, 0.024, 0.214, false);
+                const brow = addPart(headGroup, new THREE.BoxGeometry(0.050, 0.010, 0.016), hairMat, ex, 0.086, 0.188);
+                brow.rotation.z = side * 0.10;
+            });
+            const nose = addPart(headGroup, new THREE.ConeGeometry(0.027, 0.070, 5), skinWarmMat, 0, -0.018, 0.215);
+            nose.rotation.x = Math.PI / 2;
+            const upperLip = addPart(headGroup, new THREE.BoxGeometry(0.055, 0.010, 0.014), new THREE.MeshStandardMaterial({ color: 0x8b4c46, roughness: 0.46 }), 0, -0.098, 0.191);
+            const lowerLip = addPart(headGroup, new THREE.BoxGeometry(0.043, 0.007, 0.011), skinWarmMat, 0, -0.108, 0.190);
+
+            [-1, 1].forEach(side => {
+                const lens = addPart(headGroup, new THREE.TorusGeometry(0.036, 0.0042, 8, 16), glassFrameMat, side * 0.061, 0.018, 0.207);
+                const glass = addPart(headGroup, new THREE.CircleGeometry(0.032, 16), lensMat, side * 0.061, 0.018, 0.209, false);
+                glass.renderOrder = 2;
+                const temple = addPart(headGroup, new THREE.BoxGeometry(0.008, 0.008, 0.105), glassFrameMat, side * 0.150, 0.024, 0.155);
+                temple.rotation.y = side * 0.07;
+                void lens;
+            });
+            addPart(headGroup, new THREE.BoxGeometry(0.028, 0.006, 0.009), glassFrameMat, 0, 0.025, 0.210);
+
+            // Arms are pivoted at the shoulder so the rig can swing naturally.
+            const makeArm = side => {
+                const pivot = new THREE.Group();
+                pivot.position.set(side * 0.285, 1.44, 0);
+                pivot.rotation.z = side * 0.075;
+                body.add(pivot);
+                const upper = addPart(pivot, new THREE.CylinderGeometry(0.085, 0.075, 0.30, 12), suitMat, 0, -0.16, 0);
+                upper.scale.z = 0.92;
+                const forearm = addPart(pivot, new THREE.CylinderGeometry(0.072, 0.060, 0.28, 12), suitMat, 0, -0.43, 0.008);
+                forearm.rotation.x = -0.04;
+                addPart(pivot, new THREE.CylinderGeometry(0.065, 0.067, 0.055, 12), shirtMat, 0, -0.575, 0.012);
+                addPart(pivot, new THREE.SphereGeometry(0.013, 8, 8), goldMat, side * 0.048, -0.575, 0.045);
+                const hand = new THREE.Group();
+                hand.position.set(0, -0.65, 0.02);
+                pivot.add(hand);
+                const palm = addPart(hand, new THREE.SphereGeometry(0.058, 12, 10), skinMat, 0, 0, 0);
+                palm.scale.set(0.78, 1.0, 1.12);
+                for (let f = 0; f < 4; f++) {
+                    const finger = addPart(hand, new THREE.CylinderGeometry(0.008, 0.007, 0.045, 6), skinMat, -0.024 + f * 0.016, -0.040, 0.015);
+                    finger.rotation.x = 0.12;
+                }
+                addPart(hand, new THREE.SphereGeometry(0.022, 8, 8), skinWarmMat, side * -0.045, -0.005, 0.01);
+                return { pivot, hand };
+            };
+            const leftArmRig = makeArm(-1);
+            const rightArmRig = makeArm(1);
+
+            // Legs and leather shoes.
+            const makeLeg = side => {
+                const pivot = new THREE.Group();
+                pivot.position.set(side * 0.115, 0.92, 0);
+                playerGroup.add(pivot);
+                const thigh = addPart(pivot, new THREE.CylinderGeometry(0.10, 0.086, 0.40, 12), suitMat, 0, -0.20, 0);
+                thigh.scale.z = 0.88;
+                const calf = addPart(pivot, new THREE.CylinderGeometry(0.084, 0.070, 0.46, 12), suitMat, 0, -0.52, 0.008);
+                calf.scale.z = 0.86;
+                const sock = addPart(pivot, new THREE.CylinderGeometry(0.064, 0.066, 0.10, 10), suitDeepMat, 0, -0.72, 0.01);
+                sock.scale.z = 0.9;
+                const shoe = new THREE.Group();
+                shoe.position.set(0, -0.84, 0.045);
+                pivot.add(shoe);
+                const sole = addPart(shoe, new THREE.BoxGeometry(0.15, 0.026, 0.29), shoeMat, 0, -0.043, 0.045);
+                sole.scale.x = 1.02;
+                const shoeBody = addPart(shoe, new THREE.BoxGeometry(0.14, 0.085, 0.25), shoeMat, 0, 0.005, 0.035);
+                const toe = addPart(shoe, new THREE.SphereGeometry(0.082, 14, 10), shoeMat, 0, -0.005, 0.16);
+                toe.scale.set(0.9, 0.55, 1.22);
+                addPart(shoe, new THREE.BoxGeometry(0.13, 0.045, 0.07), shoeMat, 0, -0.005, -0.08);
+                return pivot;
+            };
+            const leftLegRig = makeLeg(-1);
+            const rightLegRig = makeLeg(1);
+
+            // Leather briefcase with handle, clasp and corner caps.
+            const briefcase = new THREE.Group();
+            briefcase.position.set(-0.43, 0.58, 0.095);
+            body.add(briefcase);
+            addPart(briefcase, new THREE.BoxGeometry(0.13, 0.33, 0.43), new THREE.MeshStandardMaterial({ color: 0x6b3f1f, roughness: 0.46 }), 0, 0, 0);
+            addPart(briefcase, new THREE.BoxGeometry(0.135, 0.022, 0.44), suitDeepMat, 0, 0.17, 0);
+            const handle = new THREE.Group();
+            handle.position.set(0, 0.235, 0);
+            briefcase.add(handle);
+            addPart(handle, new THREE.BoxGeometry(0.014, 0.075, 0.014), goldMat, 0, 0.035, -0.10);
+            addPart(handle, new THREE.BoxGeometry(0.014, 0.075, 0.014), goldMat, 0, 0.035, 0.10);
+            addPart(handle, new THREE.BoxGeometry(0.016, 0.016, 0.215), goldMat, 0, 0.075, 0);
+            addPart(briefcase, new THREE.BoxGeometry(0.025, 0.06, 0.08), goldMat, 0.07, 0.02, 0.02);
+            [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+                addPart(briefcase, new THREE.BoxGeometry(0.018, 0.06, 0.018), goldMat, sx * 0.058, -0.145, sz * 0.19);
+            });
+
+            playerGroup.name = 'diplomat-avatar';
             playerGroup.position.set(0, 0, 12.5);
+            playerGroup.userData.rig = {
+                body,
+                head: headGroup,
+                leftArm: leftArmRig.pivot,
+                rightArm: rightArmRig.pivot,
+                leftLeg: leftLegRig,
+                rightLeg: rightLegRig
+            };
             playerMesh = playerGroup;
             scene.add(playerMesh);
 
@@ -3965,6 +4129,7 @@
             scatteredEvidenceMeshes = [];
             explorationZones = [];
             lastRadarClock = -10;
+            playerWalkPhase = 0;
             resetCollisionWorld();
             // Central podium and memorial stone exist in every city.
             addCircleCollider(0, 0, 2.95, 'negotiation-podium');
@@ -6594,6 +6759,16 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
+        function toggle3DGuide() {
+            const panel = document.getElementById('city3d-status-panel');
+            const btn = document.getElementById('btn-toggle-3d-guide');
+            if (!panel || !btn) return;
+            const collapsed = panel.classList.toggle('collapsed');
+            btn.textContent = collapsed ? '▸' : '▾';
+            btn.title = collapsed ? '展開任務面板' : '收合任務面板';
+            btn.setAttribute('aria-label', btn.title);
+        }
+
         function reset3DCamera() {
             state.cam3D.yaw = 0;
             state.cam3D.pitch = 0.16;
@@ -6883,6 +7058,28 @@
                 playerMesh.position.x = Math.max(-68, Math.min(68, playerMesh.position.x));
                 playerMesh.position.z = Math.max(-68, Math.min(68, playerMesh.position.z));
                 playerMesh.rotation.y = Math.atan2(worldMoveX, worldMoveZ);
+            }
+
+            // 2b. Character rig: walk cycle, counter-swinging arms, body bob and idle breathing.
+            const isPlayerMoving = Math.abs(inputX) + Math.abs(inputZ) > 0.01;
+            if (playerMesh.userData.rig) {
+                const rig = playerMesh.userData.rig;
+                if (isPlayerMoving) playerWalkPhase += 0.22;
+                const stride = isPlayerMoving ? Math.sin(playerWalkPhase) * 0.46 : 0;
+                const armStride = isPlayerMoving ? Math.sin(playerWalkPhase) * 0.34 : 0;
+                rig.leftLeg.rotation.x += (stride - rig.leftLeg.rotation.x) * 0.20;
+                rig.rightLeg.rotation.x += (-stride - rig.rightLeg.rotation.x) * 0.20;
+                rig.leftArm.rotation.x += (-armStride - rig.leftArm.rotation.x) * 0.18;
+                rig.rightArm.rotation.x += (armStride - rig.rightArm.rotation.x) * 0.18;
+                const targetBob = isPlayerMoving
+                    ? Math.abs(Math.sin(playerWalkPhase)) * 0.022
+                    : Math.sin(clock3D * 1.55) * 0.006;
+                rig.body.position.y += (targetBob - rig.body.position.y) * 0.16;
+                const swayTarget = isPlayerMoving ? Math.sin(playerWalkPhase) * 0.018 : 0;
+                rig.body.rotation.z += (swayTarget - rig.body.rotation.z) * 0.12;
+                const headTargetY = isPlayerMoving ? 0 : Math.sin(clock3D * 0.55) * 0.055;
+                rig.head.rotation.y += (headTargetY - rig.head.rotation.y) * 0.10;
+                rig.head.rotation.x = isPlayerMoving ? 0.015 : 0.025 + Math.sin(clock3D * 0.8) * 0.006;
             }
 
             // 3. Free Orbit Camera Positioning around Player
