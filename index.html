@@ -2390,10 +2390,20 @@
          *  - Procedural meshes stay as instant fallbacks; detailed clones replace
          *    only after their PBR asset has decoded successfully
          * ====================================================================== */
+        const HD_CDN_BASE = 'https://cdn.jsdelivr.net/gh/Mar817k/Learn-game-H@main/';
         const HD_MODEL_URLS = {
-            eiffel: 'assets/models/eiffel/eiffel-tower.glb',
-            bench: 'assets/models/bench/painted_wooden_bench_1k.gltf',
-            lamp: 'assets/models/lamp_post/street_lamp_01_1k.gltf'
+            eiffel: {
+                cdn: HD_CDN_BASE + 'assets/models/eiffel/eiffel-tower-1k.glb',
+                local: 'assets/models/eiffel/eiffel-tower-1k.glb'
+            },
+            bench: {
+                cdn: HD_CDN_BASE + 'assets/models/bench/painted_wooden_bench_1k.gltf',
+                local: 'assets/models/bench/painted_wooden_bench_1k.gltf'
+            },
+            lamp: {
+                cdn: HD_CDN_BASE + 'assets/models/lamp_post/street_lamp_01_1k.gltf',
+                local: 'assets/models/lamp_post/street_lamp_01_1k.gltf'
+            }
         };
         const hdModelCache = {};
         const hdModelMeta = {};
@@ -2826,17 +2836,16 @@
                 console.warn('GLTFLoader unavailable; keeping procedural landmark meshes.');
                 return;
             }
-            const loader = new THREE.GLTFLoader();
-            const keys = ['bench', 'lamp', 'eiffel'];
-            const loadNext = index => {
-                if (index >= keys.length) return;
-                const key = keys[index];
-                if (hdModelCache[key] || hdModelLoading[key]) {
-                    loadNext(index + 1);
-                    return;
-                }
+            const keys = ['eiffel', 'bench', 'lamp'];
+            keys.forEach(key => {
+                const source = HD_MODEL_URLS[key];
+                if (hdModelCache[key] || hdModelLoading[key]) return;
                 hdModelLoading[key] = true;
-                loader.load(HD_MODEL_URLS[key], gltf => {
+                // A dedicated loader per asset keeps the parser state isolated:
+                // sharing one loader across three concurrent glTF trees can stall
+                // its texture queue on some drivers.
+                const loader = new THREE.GLTFLoader();
+                const handleLoaded = gltf => {
                     const root = gltf.scene;
                     root.updateMatrixWorld(true);
                     const box = new THREE.Box3().setFromObject(root);
@@ -2847,14 +2856,20 @@
                     hdModelMeta[key] = { size, minY: box.min.y };
                     hdModelLoading[key] = false;
                     applyHdModelSlots();
-                    loadNext(index + 1);
-                }, undefined, err => {
-                    hdModelLoading[key] = false;
-                    console.warn('CC0 model failed to load:', key, err && err.message);
-                    loadNext(index + 1);
-                });
-            };
-            loadNext(0);
+                };
+                const attempt = url => {
+                    loader.load(url, handleLoaded, undefined, err => {
+                        if (url !== source.local) {
+                            console.warn('CDN model unavailable, retrying local:', key);
+                            attempt(source.local);
+                            return;
+                        }
+                        hdModelLoading[key] = false;
+                        console.warn('CC0 model failed to load:', key, err && err.message);
+                    });
+                };
+                attempt(source.cdn);
+            });
         }
 
         function instantiateHdModel(key, opts = {}) {
@@ -2965,12 +2980,22 @@
             stonePbrStarted = true;
             const loader = new THREE.TextureLoader();
             const files = {
-                diffuse: 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg',
-                normal: 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg',
-                rough: 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg'
+                diffuse: {
+                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg',
+                    local: 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg'
+                },
+                normal: {
+                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg',
+                    local: 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg'
+                },
+                rough: {
+                    cdn: HD_CDN_BASE + 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg',
+                    local: 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg'
+                }
             };
             Object.keys(files).forEach(key => {
-                loader.load(files[key], tex => {
+                const entry = files[key];
+                const handleTexture = tex => {
                     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
                     tex.repeat.set(7, 7);
                     tex.encoding = key === 'diffuse' ? THREE.sRGBEncoding : THREE.LinearEncoding;
@@ -2979,7 +3004,17 @@
                     if (stonePbr.diffuse && stonePbr.normal && stonePbr.rough && currentPlazaMaterial) {
                         applyStonePbr(currentPlazaMaterial);
                     }
-                }, undefined, () => console.warn('Paving texture failed to load:', key));
+                };
+                const attempt = url => {
+                    loader.load(url, handleTexture, undefined, () => {
+                        if (url !== entry.local) {
+                            attempt(entry.local);
+                            return;
+                        }
+                        console.warn('Paving texture failed to load:', key);
+                    });
+                };
+                attempt(entry.cdn);
             });
         }
 

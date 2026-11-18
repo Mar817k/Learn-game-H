@@ -6,7 +6,7 @@
 
 | 檔案 | 用途 | 來源 | 授權 |
 | --- | --- | --- | --- |
-| `models/eiffel/eiffel-tower.glb` | 巴黎艾菲爾鐵塔高細節模型 | https://grab3d.com/models/buildings/eiffel-tower/ | CC0 1.0 |
+| `models/eiffel/eiffel-tower-1k.glb` | 巴黎艾菲爾鐵塔高細節模型 | https://grab3d.com/models/buildings/eiffel-tower/ | CC0 1.0 |
 | `models/bench/painted_wooden_bench_1k.gltf` | 七城廣場長椅 | https://polyhaven.com/a/painted_wooden_bench | CC0 |
 | `models/lamp_post/street_lamp_01_1k.gltf` | 七城廣場鑄鐵路燈 | https://polyhaven.com/a/street_lamp_01 | CC0 |
 
