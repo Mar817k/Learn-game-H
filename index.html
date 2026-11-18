@@ -9,6 +9,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Three.js & Tone.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <!-- Self-hosted Noto Sans TC & JetBrains Mono -->
     <link href="https://miaoda.feishu.cn/fonts/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
@@ -2383,6 +2384,26 @@
         let flagCloths = [];
         let glassWindowMaterials = [];
 
+        /* ======================================================================
+         * HIGH-DETAIL CC0 MODEL LAYER
+         *  - Poly Haven / Grab3D assets, loaded lazily and kept in a shared cache
+         *  - Procedural meshes stay as instant fallbacks; detailed clones replace
+         *    only after their PBR asset has decoded successfully
+         * ====================================================================== */
+        const HD_MODEL_URLS = {
+            eiffel: 'assets/models/eiffel/eiffel-tower.glb',
+            bench: 'assets/models/bench/painted_wooden_bench_1k.gltf',
+            lamp: 'assets/models/lamp_post/street_lamp_01_1k.gltf'
+        };
+        const hdModelCache = {};
+        const hdModelMeta = {};
+        const hdModelLoading = {};
+        let hdSlots = [];
+        let hdPreloadStarted = false;
+        let currentPlazaMaterial = null;
+        let stonePbr = {};
+        let stonePbrStarted = false;
+
         function makeCanvas(w, h) {
             const c = document.createElement('canvas');
             c.width = w;
@@ -2704,6 +2725,7 @@
             bench.position.set(x, 0, z);
             bench.rotation.y = rotY;
             cityLandmarkGroup.add(bench);
+            registerHdSlot(bench, 'bench');
             addBoxCollider(x, z, 2.65, 0.95, rotY, 'bench');
         }
 
@@ -2763,6 +2785,202 @@
 
         function addWaterZone(minX, maxX, minZ, maxZ, label = 'water', piers = []) {
             waterZones.push({ minX, maxX, minZ, maxZ, label, piers });
+        }
+
+        // ----------------------------------------------------------------------
+        // High-detail model layer (CC0 assets, async with procedural fallback)
+        // ----------------------------------------------------------------------
+        function registerHdSlot(object, kind, options = {}) {
+            if (!object) return;
+            hdSlots.push({ object, kind, options, applied: false });
+        }
+
+        function tuneDetailedModel(root, key) {
+            root.traverse(node => {
+                if (!node.isMesh) return;
+                node.castShadow = true;
+                node.receiveShadow = true;
+                const mats = Array.isArray(node.material) ? node.material : [node.material];
+                mats.forEach(mat => {
+                    if (!mat) return;
+                    if ('envMapIntensity' in mat) mat.envMapIntensity = 1.15;
+                    if (mat.map && renderer) mat.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                    if (mat.name && mat.name.indexOf('glass') !== -1) {
+                        mat.transparent = true;
+                        mat.opacity = 0.38;
+                        mat.depthWrite = false;
+                        mat.roughness = 0.12;
+                    }
+                    if (mat.name && mat.name.indexOf('bulb') !== -1) {
+                        mat.emissive = new THREE.Color(0xffd78a);
+                        mat.emissiveIntensity = 1.6;
+                    }
+                });
+            });
+        }
+
+        function startHdModelPreload() {
+            if (hdPreloadStarted) return;
+            hdPreloadStarted = true;
+            if (!THREE.GLTFLoader) {
+                console.warn('GLTFLoader unavailable; keeping procedural landmark meshes.');
+                return;
+            }
+            const loader = new THREE.GLTFLoader();
+            const keys = ['bench', 'lamp', 'eiffel'];
+            const loadNext = index => {
+                if (index >= keys.length) return;
+                const key = keys[index];
+                if (hdModelCache[key] || hdModelLoading[key]) {
+                    loadNext(index + 1);
+                    return;
+                }
+                hdModelLoading[key] = true;
+                loader.load(HD_MODEL_URLS[key], gltf => {
+                    const root = gltf.scene;
+                    root.updateMatrixWorld(true);
+                    const box = new THREE.Box3().setFromObject(root);
+                    const size = new THREE.Vector3();
+                    box.getSize(size);
+                    tuneDetailedModel(root, key);
+                    hdModelCache[key] = root;
+                    hdModelMeta[key] = { size, minY: box.min.y };
+                    hdModelLoading[key] = false;
+                    applyHdModelSlots();
+                    loadNext(index + 1);
+                }, undefined, err => {
+                    hdModelLoading[key] = false;
+                    console.warn('CC0 model failed to load:', key, err && err.message);
+                    loadNext(index + 1);
+                });
+            };
+            loadNext(0);
+        }
+
+        function instantiateHdModel(key, opts = {}) {
+            const source = hdModelCache[key];
+            const meta = hdModelMeta[key];
+            if (!source || !meta) return null;
+            const clone = source.clone(true);
+            clone.userData.hdModel = true;
+            let sx = opts.scaleX || 1;
+            let sy = opts.scaleY || 1;
+            let sz = opts.scaleZ || 1;
+            if (opts.targetHeight) {
+                sy = opts.targetHeight / Math.max(0.001, meta.size.y);
+                sx = sy;
+                sz = sy;
+            }
+            if (opts.targetWidth) {
+                sx = opts.targetWidth / Math.max(0.001, meta.size.x);
+                if (!opts.scaleY) sy = sx;
+                if (!opts.scaleZ) sz = sx;
+            }
+            if (opts.uniform) { sx = sy = sz = opts.uniform; }
+            clone.scale.set(sx, sy, sz);
+            clone.position.set(opts.x || 0, (opts.y || 0) - meta.minY * sy, opts.z || 0);
+            clone.rotation.y = opts.rotY || 0;
+            clone.traverse(node => {
+                if (!node.isMesh) return;
+                node.castShadow = true;
+                node.receiveShadow = true;
+            });
+            return clone;
+        }
+
+        function applyHdModelSlots() {
+            if (!cityLandmarkGroup || !threeInitialized) return;
+            hdSlots.forEach(slot => {
+                if (slot.applied) return;
+                const kind = slot.kind;
+                if (kind === 'eiffel' && hdModelCache.eiffel) {
+                    const old = slot.object;
+                    old.visible = false;
+                    const model = instantiateHdModel('eiffel', {
+                        x: old.position.x,
+                        y: 0,
+                        z: old.position.z,
+                        rotY: old.rotation.y,
+                        targetHeight: 29.5
+                    });
+                    if (model) {
+                        cityLandmarkGroup.add(model);
+                        slot.applied = true;
+                    }
+                } else if (kind === 'bench' && hdModelCache.bench) {
+                    const old = slot.object;
+                    old.visible = false;
+                    const model = instantiateHdModel('bench', {
+                        x: old.position.x,
+                        y: 0,
+                        z: old.position.z,
+                        rotY: old.rotation.y,
+                        scaleX: 1.95,
+                        scaleY: 1.42,
+                        scaleZ: 1.55
+                    });
+                    if (model) {
+                        cityLandmarkGroup.add(model);
+                        slot.applied = true;
+                    }
+                } else if (kind === 'lampGroup' && hdModelCache.lamp) {
+                    const old = slot.object;
+                    const posts = slot.options.posts || [];
+                    old.visible = false;
+                    posts.forEach(post => {
+                        const model = instantiateHdModel('lamp', {
+                            x: post.x,
+                            y: 0,
+                            z: post.z,
+                            rotY: post.angle || 0,
+                            targetHeight: 4.32
+                        });
+                        if (model) cityLandmarkGroup.add(model);
+                    });
+                    slot.applied = true;
+                }
+            });
+        }
+
+        // ----------------------------------------------------------------------
+        // Photo-scanned paving for the central plaza (Poly Haven CC0)
+        // ----------------------------------------------------------------------
+        function applyStonePbr(material) {
+            if (!material || !stonePbr.diffuse) return;
+            material.map = stonePbr.diffuse;
+            material.normalMap = stonePbr.normal;
+            material.roughnessMap = stonePbr.rough;
+            material.color.setHex(0xd9d2c7);
+            material.normalScale = new THREE.Vector2(0.42, 0.42);
+            material.bumpMap = null;
+            material.bumpScale = 0;
+            material.roughness = 0.86;
+            material.metalness = 0.04;
+            material.envMapIntensity = 0.6;
+            material.needsUpdate = true;
+        }
+
+        function startStonePbrLoad() {
+            if (stonePbrStarted) return;
+            stonePbrStarted = true;
+            const loader = new THREE.TextureLoader();
+            const files = {
+                diffuse: 'assets/textures/stone_pavers/stone_pavers_diff_1k.jpg',
+                normal: 'assets/textures/stone_pavers/stone_pavers_nor_1k.jpg',
+                rough: 'assets/textures/stone_pavers/stone_pavers_rough_1k.jpg'
+            };
+            Object.keys(files).forEach(key => {
+                loader.load(files[key], tex => {
+                    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+                    tex.repeat.set(7, 7);
+                    tex.encoding = key === 'diffuse' ? THREE.sRGBEncoding : THREE.LinearEncoding;
+                    if (renderer) tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+                    stonePbr[key] = tex;
+                    if (stonePbr.diffuse && stonePbr.normal && stonePbr.rough && currentPlazaMaterial) {
+                        applyStonePbr(currentPlazaMaterial);
+                    }
+                }, undefined, () => console.warn('Paving texture failed to load:', key));
+            });
         }
 
         function isInWaterZone(x, z) {
@@ -3231,6 +3449,10 @@
 
             addAmbientAtmosphere();
             threeInitialized = true;
+            // Detail assets are optional: the procedural scene is already visible
+            // while these decode, and failed downloads leave the fallback intact.
+            setTimeout(startHdModelPreload, 700);
+            setTimeout(startStonePbrLoad, 300);
         }
 
         // Procedural Architectural Canvas Texture Generator (v2 — 512px, PBR-friendly)
@@ -3702,17 +3924,21 @@
          * Builds custom 3D realistic architecture, gardens & landmarks tailored to each of the 7 cities
          */
         function buildRealisticCityEnvironment(cityId) {
+            hdSlots = [];
+            currentPlazaMaterial = null;
             while (cityLandmarkGroup.children.length > 0) {
                 const obj = cityLandmarkGroup.children[0];
-                // Release per-city GPU resources so hopping between cities doesn't leak memory.
-                // Cached textures in MODEL_CACHE stay alive; only geometries/materials are disposed.
-                obj.traverse(node => {
-                    if (node.geometry) node.geometry.dispose();
-                    if (node.material) {
-                        const mats = Array.isArray(node.material) ? node.material : [node.material];
-                        mats.forEach(mat => mat.dispose());
-                    }
-                });
+                // Detail-model clones share geometry/material with the persistent
+                // cache, so they must be removed without disposing the cache.
+                if (!obj.userData.hdModel) {
+                    obj.traverse(node => {
+                        if (node.geometry) node.geometry.dispose();
+                        if (node.material) {
+                            const mats = Array.isArray(node.material) ? node.material : [node.material];
+                            mats.forEach(mat => mat.dispose());
+                        }
+                    });
+                }
                 cityLandmarkGroup.remove(obj);
             }
             dynamicCityProps = [];
@@ -4011,6 +4237,10 @@
                 plaza.rotation.x = -Math.PI / 2;
                 plaza.receiveShadow = true;
                 cityLandmarkGroup.add(plaza);
+                currentPlazaMaterial = plaza.material;
+                if (stonePbr.diffuse && stonePbr.normal && stonePbr.rough) {
+                    applyStonePbr(currentPlazaMaterial);
+                }
 
                 // Inner brass medallion ring
                 const medallion = new THREE.Mesh(
@@ -4337,6 +4567,8 @@
                 const dummy = new THREE.Object3D();
 
                 const glowPoolMats = [];
+                const lampPosts = [];
+                const lampInstGroup = new THREE.Group();
                 for (let i = 0; i < count; i++) {
                     const ang = (i / count) * Math.PI * 2 + 0.31;
                     // Keep the southern approach corridor free of lamp posts
@@ -4344,6 +4576,7 @@
                     const px = Math.cos(ang) * r;
                     const pz = Math.sin(ang) * r;
                     addCircleCollider(px, pz, 0.34, 'street-lamp');
+                    lampPosts.push({ x: px, z: pz, angle: -ang });
 
                     dummy.position.set(px, 0.05, pz);
                     dummy.rotation.set(-Math.PI / 2, 0, 0);
@@ -4388,7 +4621,7 @@
                     list.forEach((m, i) => mesh.setMatrixAt(i, m));
                     mesh.instanceMatrix.needsUpdate = true;
                     mesh.castShadow = cast;
-                    cityLandmarkGroup.add(mesh);
+                    lampInstGroup.add(mesh);
                 };
 
                 addInst(new THREE.CylinderGeometry(0.22, 0.36, 0.8, 12), metalDark, baseMats, true);
@@ -4396,6 +4629,8 @@
                 addInst(new THREE.BoxGeometry(0.95, 0.075, 0.075), metalDark, crossMats);
                 addInst(new THREE.TorusGeometry(0.15, 0.035, 6, 12), goldTrim, ringMats);
                 addInst(new THREE.SphereGeometry(0.22, 12, 10), bulbMat, bulbMats);
+                cityLandmarkGroup.add(lampInstGroup);
+                registerHdSlot(lampInstGroup, 'lampGroup', { posts: lampPosts });
 
                 const poolMat = new THREE.MeshBasicMaterial({
                     map: getGlowTexture(),
@@ -4655,6 +4890,7 @@
                 tower.position.set(0, 0, -37);
                 tower.scale.setScalar(0.94);
                 cityLandmarkGroup.add(tower);
+                registerHdSlot(tower, 'eiffel');
 
                 // Haussmann Stone Boulevards with Dormer Windows & Mansard Roofs
                 // (-24.5, -14) and (24.5, -14) are OPEN ENTERABLE HISTORICAL BUILDINGS!
@@ -6305,6 +6541,7 @@
                 addBoxCollider(17, 4.5, 4.2, 3.4, Math.PI, 'manneken-pis');
             }
 
+            applyHdModelSlots();
             refreshColliderDebug();
         }
 
